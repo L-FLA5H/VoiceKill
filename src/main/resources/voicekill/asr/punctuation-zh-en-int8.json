@@ -1,0 +1,15 @@
+{
+  "id": "punctuation-zh-en-int8",
+  "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8.tar.bz2",
+  "revision": "5cccf43af83e4fc50d1d55b8410312e87709be70",
+  "license": "apache-2.0",
+  "officialArchiveSha256": "c0d5aa5f8eeb686032345e180bedf39319dc2e0556781c6264bcadba8328a6e1",
+  "files": [
+    {
+      "name": "model.int8.onnx",
+      "url": "https://huggingface.co/ranger810/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8/resolve/5cccf43af83e4fc50d1d55b8410312e87709be70/model.int8.onnx",
+      "size": 75519198,
+      "sha256": "65a3fb9f5ad7bfb96bf69e0dc4481df97f6ee60513c1d94ce981ba6effd524b1"
+    }
+  ]
+}

@@ -1,6 +1,31 @@
+# Gradle 与编译产物
 .gradle/
 build/
 out/
+
+# 开发游戏目录（配置、存档、日志、语音模型）
 run/
+runServer/
+logs/
+crash-reports/
+hs_err_pid*.log
+replay_pid*.log
+
+# 本地归档及机器配置；不提交开发包、个人部署路径
+.local/
+
+# IDE / 系统文件
 .idea/
 *.iml
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# 工具生成的依赖接口快照
+docs/shriek-javap.txt
+
+# Python 诊断脚本与浏览器验证缓存
+__pycache__/
+*.py[cod]
+.playwright-mcp/

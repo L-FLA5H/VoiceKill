@@ -1,0 +1,24 @@
+VoiceKill source code: MIT, see the repository LICENSE.
+
+This development build includes the sherpa-onnx JVM API and platform JNI
+artifacts from k2-fsa/sherpa-onnx 1.13.5, under the Apache License 2.0.
+https://github.com/k2-fsa/sherpa-onnx
+See sherpa-onnx-APACHE-2.0.txt in this directory.
+
+The native runtime includes Microsoft ONNX Runtime, under the MIT License.
+https://github.com/microsoft/onnxruntime
+See onnxruntime-MIT.txt in this directory.
+
+Model weights are not included in this JAR. The optional downloaded bilingual
+Zipformer model is declared Apache-2.0 by its source model card:
+https://huggingface.co/csukuangfj/k2fsa-zipformer-bilingual-zh-en-t
+The pinned revision and per-file hashes are in
+voicekill/asr/zipformer-bilingual-small-int8.json.
+
+The optional SenseVoice INT8 sentence reviewer uses the Apache-2.0 model:
+https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17
+The offline CT Transformer punctuation model is provided by sherpa-onnx:
+https://github.com/k2-fsa/sherpa-onnx/releases/tag/punctuation-models
+Pinned revisions, sources and hashes are in voicekill/asr/sensevoice-review-int8.json
+and voicekill/asr/punctuation-zh-en-int8.json. No model weights are bundled.
+The separate experimental SenseVoice/Silero replacement pipeline remains test-only.

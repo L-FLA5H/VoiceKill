@@ -75,6 +75,10 @@ public final class WebConsole {
                 manager.requestReroll();
                 return true;
             }));
+            server.createContext("/api/debug/match", ex -> handleAction(ex, body -> {
+                manager.requestPreviewSpeech(str(body, "text"));
+                return true;
+            }));
             server.createContext("/api/debug/speech", ex -> handleAction(ex, body -> {
                 manager.requestSimulateSpeech(str(body, "text"));
                 return true;
@@ -214,27 +218,34 @@ public final class WebConsole {
 
     /** 录音设备：GET 列表 / POST 切换 */
     private void handleAudio(HttpExchange exchange) throws IOException {
+        if (net.fabricmc.loader.api.FabricLoader.getInstance().getEnvironmentType() != net.fabricmc.api.EnvType.CLIENT) {
+            send(exchange, 200, "application/json", GSON.toJson(Map.of("available", false,
+                    "message", "独立服务器无法访问玩家的麦克风，请在各自客户端按 F8"))
+                    .getBytes(StandardCharsets.UTF_8));
+            return;
+        }
         if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
             handleAction(exchange, body -> {
                 String device = str(body, "device");
-                com.example.voicekill.config.ModConfig config =
-                        com.example.voicekill.config.ModConfig.get();
-                if (config != null) {
-                    config.audioDevice = device == null ? "" : device;
-                    config.save();
-                    VoiceKillMod.LOGGER.info("[VoiceKill] 录音设备改为：{}（重启游戏后生效）",
-                            config.audioDevice.isBlank() ? "系统默认" : config.audioDevice);
-                }
+                if (device == null) return false;
+                Thread thread = new Thread(() -> {
+                    if (com.example.voicekill.client.MicCapture.start(device)) {
+                        ModConfig config = ModConfig.get();
+                        config.audioDevice = device;
+                        config.save();
+                    }
+                }, "VoiceKill-WebMicSwitch");
+                thread.setDaemon(true); thread.start();
                 return true;
             });
             return;
         }
-        Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        Map<String, Object> payload = new java.util.LinkedHashMap<>(com.example.voicekill.client.MicCapture.snapshot());
+        payload.put("available", true);
         payload.put("devices", com.example.voicekill.client.AudioDevices.list());
-        com.example.voicekill.config.ModConfig config = com.example.voicekill.config.ModConfig.get();
+        ModConfig config = ModConfig.get();
         payload.put("current", config == null ? "" : config.audioDevice);
-        send(exchange, 200, "application/json",
-                GSON.toJson(payload).getBytes(StandardCharsets.UTF_8));
+        send(exchange, 200, "application/json", GSON.toJson(payload).getBytes(StandardCharsets.UTF_8));
     }
 
     private interface Action {

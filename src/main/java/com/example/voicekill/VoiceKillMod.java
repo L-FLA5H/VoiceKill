@@ -51,6 +51,7 @@ public class VoiceKillMod implements ModInitializer {
         // 玩家进服时把当前危险词推给他
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) ->
                 dangerWordManager.onPlayerJoin(handler.player));
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> SpeechHandler.forget(handler.player));
 
         // 语音事件 → 记录词频 → 判定 → kill
         SpeechHandler.register(dangerWordManager);
@@ -60,7 +61,11 @@ public class VoiceKillMod implements ModInitializer {
             dangerWordManager.attach(server);
             webConsole.start(config);
         });
-        ServerLifecycleEvents.SERVER_STOPPING.register(server -> webConsole.stop());
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
+            dangerWordManager.stop(server);
+            webConsole.stop();
+            SpeechHandler.reset();
+        });
 
         LOGGER.info("[VoiceKill] 初始化完成：自定义词 {} 个，每 {} 秒轮换，智能选词 {}",
                 config.dangerWords.size(),

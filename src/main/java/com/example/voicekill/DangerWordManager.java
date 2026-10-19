@@ -4,7 +4,6 @@ import com.example.voicekill.config.ModConfig;
 import com.example.voicekill.network.HudStatePayload;
 import com.example.voicekill.speech.SpeechStats;
 import com.example.voicekill.speech.SpeechStats.WordCount;
-import com.example.voicekill.util.FuzzyMatch;
 import com.example.voicekill.util.TextUtil;
 import com.example.voicekill.util.WordAliases;
 import com.example.voicekill.wordbank.WordBank;
@@ -65,11 +64,20 @@ public final class DangerWordManager {
 
     // ---------------- 跨线程可见 ----------------
     private volatile Map<String, Object> snapshot = Map.of();
+    private final com.example.voicekill.speech.SpeechWindow previewWindow = new com.example.voicekill.speech.SpeechWindow();
+    private Map<String, Object> speechPreview = Map.of();
+
+    private void updateWords(List<WordSlot> words) {
+        currentWords = List.copyOf(words);
+        SpeechHandler.reset();
+        previewWindow.clear();
+        speechPreview = Map.of();
+    }
 
     public DangerWordManager(ModConfig config, SpeechStats stats) {
         this.config = config;
         this.stats = stats;
-        this.currentWords = buildRound(null, null);
+        updateWords(buildRound(null, null));
         this.ticksUntilRotate = intervalTicks();
         VoiceKillMod.LOGGER.info("[VoiceKill] 初始危险词：{}（每 {} 秒轮换一次）",
                 renderWords(currentWords), config.intervalSeconds);
@@ -134,7 +142,7 @@ public final class DangerWordManager {
         this.nextWords = List.of();
         this.history.clear();
         stats.finishCycle();
-        this.currentWords = buildRound(null, null);
+        updateWords(buildRound(null, null));
         this.ticksUntilRotate = intervalTicks();
         this.ticksElapsed = 0;
         pushHistory(currentWords);
@@ -148,6 +156,7 @@ public final class DangerWordManager {
     /** /voicekill stop：停表、停止判定（榜单保留） */
     public void stop(MinecraftServer server) {
         this.running = false;
+        SpeechHandler.reset();
         this.ticksElapsed = 0;
         VoiceKillMod.LOGGER.info("[VoiceKill] 游戏已停止（/voicekill start 重新开始）");
         publishSnapshot(server);
@@ -191,7 +200,7 @@ public final class DangerWordManager {
 
         // 2) 组新的一组词
         List<String> manual = forcedWords != null ? forcedWords : nextWords;
-        this.currentWords = buildRound(manual, candidates);
+        updateWords(buildRound(manual, candidates));
         this.nextWords = List.of();
         this.ticksUntilRotate = intervalTicks();
         this.ticksElapsed = 0;
@@ -384,45 +393,15 @@ public final class DangerWordManager {
      *
      * @return 命中的那个词；没命中返回 null
      */
-    public String match(String speechText) {
-        if (!running || speechText == null || currentWords.isEmpty()) {
-            return null;
-        }
-        String normalized = normalize(speechText);
-        if (normalized.isEmpty()) {
-            return null;
-        }
-        for (WordSlot slot : currentWords) {
-            String target = normalize(slot.word());
-            if (!target.isEmpty() && normalized.contains(target)) {
-                return slot.word();
-            }
-            // 模糊匹配：人名/手动词，长度 ≥4 时允许差一两个字
-            // （「你好呀装装」说成「你好呀中中」也算中）
-            if (isFuzzyEligible(slot) && FuzzyMatch.isClose(target, normalized)) {
-                return slot.word();
-            }
-            // 谐音变体：说「哎弟」也算踩中「ad」
-            List<String> aliases = slot.aliases();
-            if (aliases != null) {
-                for (String alias : aliases) {
-                    String normalizedAlias = normalize(alias);
-                    if (!normalizedAlias.isEmpty() && normalized.contains(normalizedAlias)) {
-                        return slot.word();
-                    }
-                }
-            }
-        }
-        return null;
+    public List<com.example.voicekill.speech.WordMatcher.Word> matchingWords() {
+        return currentWords.stream().map(slot -> new com.example.voicekill.speech.WordMatcher.Word(
+                slot.word(), slot.source(), slot.aliases())).toList();
     }
 
-    /** 只有人名和手动指定的长词才做模糊匹配，口语词（小白/吃的）一律精确匹配 */
-    private boolean isFuzzyEligible(WordSlot slot) {
-        String source = slot.source();
-        if (!"name".equals(source) && !"manual".equals(source)) {
-            return false;
-        }
-        return normalize(slot.word()).length() >= 4;
+    public String match(String speechText) {
+        if (!running) return null;
+        var hit = com.example.voicekill.speech.WordMatcher.find(matchingWords(), speechText, false, 0);
+        return hit == null ? null : hit.word();
     }
 
     /** 记一笔「言多必失」 */
@@ -467,7 +446,7 @@ public final class DangerWordManager {
             }
             if (slots.isEmpty()) return;
 
-            this.currentWords = slots;
+            updateWords(slots);
             this.ticksElapsed = 0;
             this.ticksUntilRotate = intervalTicks();
             pushHistory(currentWords);
@@ -492,7 +471,7 @@ public final class DangerWordManager {
             Set<String> used = new HashSet<>();
             for (WordSlot s : slots) used.add(normalize(s.word()));
             if (addSlot(slots, used, word, "manual")) {
-                this.currentWords = slots;
+                updateWords(slots);
                 VoiceKillMod.LOGGER.info("[VoiceKill] 本轮新增危险词：{}", word);
                 if (config.enableActionbarHint) {
                     broadcastActionBar(server, hintText());
@@ -517,7 +496,7 @@ public final class DangerWordManager {
                 }
             }
             if (removed && !slots.isEmpty()) {
-                this.currentWords = slots;
+                updateWords(slots);
                 VoiceKillMod.LOGGER.info("[VoiceKill] 本轮移除危险词：{}", word);
                 if (config.enableActionbarHint) {
                     broadcastActionBar(server, hintText());
@@ -599,6 +578,25 @@ public final class DangerWordManager {
      * 测试用：把一段文本当成「某个在线玩家说出来的」灌进完整管线（统计 + 判定 + 处决）。
      * 没有玩家在线时只做统计，用来验证智能选词是否工作。
      */
+    /** 安全的匹配预览：不统计词频、不选择在线玩家、不处决。 */
+    public void requestPreviewSpeech(String text) {
+        onServer(server -> {
+            var packet = com.example.voicekill.speech.SpeechPacket.parse(text);
+            var result = previewWindow.accept("preview", packet, matchingWords(), System.currentTimeMillis());
+            Map<String, Object> preview = new LinkedHashMap<>();
+            preview.put("text", text == null ? "" : text);
+            preview.put("matched", result.hit() != null);
+            if (result.hit() != null) {
+                preview.put("word", result.hit().word());
+                preview.put("mode", result.hit().mode());
+                preview.put("evidence", result.hit().evidence());
+                preview.put("candidate", result.candidate() + 1);
+            }
+            speechPreview = preview;
+            publishSnapshot(server);
+        });
+    }
+
     public void requestSimulateSpeech(String text) {
         onServer(server -> {
             ServerPlayer target = server.getPlayerList().getPlayers().stream().findFirst().orElse(null);
@@ -703,7 +701,7 @@ public final class DangerWordManager {
         for (WordSlot slot : currentWords) {
             addSlot(rebuilt, used, slot.word(), slot.source());
         }
-        this.currentWords = rebuilt;
+        updateWords(rebuilt);
     }
 
     /** 网页改配置；参数都可以为 null（表示这一项不动） */
@@ -771,6 +769,7 @@ public final class DangerWordManager {
     private void publishSnapshot(MinecraftServer server) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("running", running);
+        map.put("speechPreview", speechPreview);
         map.put("currentWords", slotsToList(currentWords));
         map.put("nextWords", new ArrayList<>(nextWords));
         map.put("wordsPerRound", config.wordsPerRound);

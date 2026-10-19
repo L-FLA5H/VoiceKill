@@ -48,12 +48,13 @@
   .bar{height:6px;border-radius:6px;background:#0d1319;overflow:hidden;margin-top:8px;border:1px solid var(--line)}
   .bar > i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent),#7be0ff);transition:width .9s linear}
 
-  .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+  .grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px;min-width:0;overflow-wrap:anywhere}
   .card h2{margin:0 0 12px;font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .card h2 span.hint{font-weight:400;font-size:12px;color:var(--muted)}
   .col-3{grid-column:span 3}.col-4{grid-column:span 4}.col-5{grid-column:span 5}
   .col-6{grid-column:span 6}.col-7{grid-column:span 7}.col-8{grid-column:span 8}
+  .col-12{grid-column:span 12}
   @media (max-width:900px){
     .col-3,.col-4,.col-5,.col-6,.col-7,.col-8{grid-column:span 12}
     .hero{grid-template-columns:1fr;gap:14px}
@@ -61,6 +62,13 @@
     .timer .row{justify-content:flex-start !important}
     .chips{max-height:180px}
     button,.chip,.tab{min-height:34px}
+  }
+  @media (max-width:600px){
+    header{padding:12px;gap:10px;flex-wrap:wrap}
+    main{padding:12px 12px 40px}
+    .hero{padding:16px;min-width:0}
+    .hero > *{min-width:0}
+    .wchip{max-width:100%;overflow-wrap:anywhere}
   }
 
   input[type=text],select{width:100%;background:#0d1319;border:1px solid var(--line);border-radius:9px;
@@ -108,11 +116,11 @@
     background:#8b98a5;transition:.2s}
   .switch input:checked::after{left:20px;background:var(--accent)}
 
-  input[type=range]{width:100%;accent-color:var(--accent)}
+  input[type=range]{width:100%;margin:0;accent-color:var(--accent)}
   .kv{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin:10px 0 4px}
   .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);
     background:#101820;border:1px solid var(--accent-dim);color:var(--text);
-    padding:10px 18px;border-radius:10px;opacity:0;pointer-events:none;transition:.25s;z-index:99}
+    padding:10px 18px;border-radius:10px;opacity:0;pointer-events:none;transition:.25s;z-index:99;max-width:calc(100vw - 24px);overflow-wrap:anywhere}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
   ::-webkit-scrollbar{width:10px;height:10px}
   ::-webkit-scrollbar-thumb{background:#232c38;border-radius:8px}
@@ -197,10 +205,11 @@
       <h2>本周期高频词 <span class="hint">点击 → 设为下一轮</span></h2>
       <div class="chips" id="stats"><div class="empty">还没有人说话…</div></div>
       <div class="row" style="margin-top:12px">
-        <input type="text" id="simInput" placeholder="模拟一句话（测试用）"
+        <input type="text" id="simInput" placeholder="输入识别文本，仅测试匹配，不会处决玩家"
                onkeydown="if(event.key==='Enter')simulate()">
-        <button onclick="simulate()">模拟</button>
+        <button onclick="simulate()">仅测匹配</button>
       </div>
+      <div class="muted" id="matchPreview" style="margin-top:8px" aria-live="polite">预览不影响词频、榜单或玩家。</div>
       <h2 style="margin-top:16px">上一周期高频词 <span class="hint">智能选词（权重 ×3）</span></h2>
       <div class="chips" id="lastCycle"><div class="empty">上一周期没有数据</div></div>
       <h2 style="margin-top:16px">整局累计高频词 <span class="hint">权重 ×1，越常说越容易出</span></h2>
@@ -234,8 +243,20 @@
       </div>
       <div class="chips" id="aliasList"><div class="empty">还没有配置别名</div></div>
       <div class="muted" style="margin-top:12px;font-size:12px">
-        录音设备：按 <b>F8</b> 可以看当前系统有哪些设备。<br>
-        要换设备请到 Windows 设置 → 系统 → 声音 → 输入，改完重启游戏。
+        录音设备：按 <b>F8</b> 选择设备、查看输入音量或重新连接。<br>
+        Windows 与 macOS 都需要允许游戏/启动器访问麦克风。
+      </div>
+    </section>
+
+    <section class="card col-12">
+      <h2>麦克风状态 <span class="hint">仅查看此游戏客户端，联机玩家需各自按 F8</span></h2>
+      <div class="muted">音频输入设备（Windows / macOS）：也可在游戏内按 F8 选择。</div>
+      <div id="sentenceStatus" class="muted" aria-live="polite"></div>
+      <div id="audioStatus" class="muted" aria-live="polite">正在查询…</div>
+      <div class="row" style="margin-top:10px">
+        <select id="audioDevice" aria-label="录音输入设备"></select>
+        <button id="audioApply" onclick="switchAudio()">连接并保存</button>
+        <button onclick="pollAudio()">刷新状态</button>
       </div>
     </section>
 
@@ -261,9 +282,13 @@ const TAB_WORD = {custom:'customWords', names:'nameWords', slang:'slangWords',
 
 async function act(path, body) {
   try {
-    await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body || {})});
-  } catch (e) { toast('请求失败：' + e.message); }
-  poll();
+    const res = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body || {})});
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const result = await res.json();
+    if (!result.ok) throw new Error('操作未被接受，请检查输入或设备状态');
+    poll();
+    return true;
+  } catch (e) { toast('请求失败：' + e.message); return false; }
 }
 
 async function poll() {
@@ -292,6 +317,10 @@ function render() {
   }
   renderWords();
   renderBoard();
+  const preview = state.speechPreview || {};
+  $('matchPreview').textContent = preview.text == null ? '预览不影响词频、榜单或玩家。'
+      : preview.matched ? `命中「${preview.word}」 · ${preview.mode} · 证据「${preview.evidence}」 · 候选 ${preview.candidate}`
+      : '未命中当前危险词（仅测匹配，不会处决玩家）';
 
   const remain = state.remainingSeconds || 0;
   const total = state.intervalSeconds || 30;
@@ -563,12 +592,56 @@ function addAlias() {
   $('aliasValue').value = '';
   toast('已为 ' + word + ' 添加 ' + aliases.length + ' 个谐音');
 }
-function simulate() {
+async function simulate() {
   const v = $('simInput').value.trim();
   if (!v) return;
   $('simInput').value = '';
-  act('/api/debug/speech', {text: v});
-  toast('已模拟：' + v);
+  if (await act('/api/debug/match', {text: v})) toast('已发送匹配预览');
+}
+
+async function pollAudio() {
+  try {
+    const res = await fetch('/api/audio', {cache:'no-store'});
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const audio = await res.json();
+    $('audioDevice').disabled = !audio.available;
+    const busy = ['starting','opening','model','ready'].includes(audio.state);
+    $('audioApply').disabled = !audio.available || busy;
+    if (!audio.available) { $('audioStatus').textContent = audio.message; return; }
+    const labels = {idle:'录音已停止',stopped:'录音已停止',recording:'正在录音',failed:'录音失败',
+                    model:'正在准备模型，首次下载请等待',opening:'正在连接设备',starting:'正在启动',ready:'正在启动'};
+    $('audioStatus').textContent = `${labels[audio.state] || audio.state} · ${audio.device || '系统默认'}`
+        + (audio.engine ? ` · ${audio.engine}` : '')
+        + (audio.state === 'recording' ? ` · 输入音量 ${Math.round((audio.level || 0) * 100)}%` : '')
+        + (audio.error ? ` · ${audio.error}` : '')
+        + (audio.note ? ` · ${audio.note}` : '');
+    const post = audio.postprocess;
+    const latest = post && post.latest;
+    $('sentenceStatus').textContent = post ? ('句末模型：' + ({loading:'后台准备中',ready:'已就绪',failed:'不可用，继续基础识别',closed:'已停止'}[post.state] || post.state)
+      + (post.error ? ' · ' + post.error : '') + (latest ? ' · ' + latest.punctuated + ' · 复核 ' + Math.round(latest.reviewMs) + 'ms / 标点 ' + Math.round(latest.punctuationMs) + 'ms' + (latest.error ? ' · ' + latest.error : '') : '')) : '';
+    const signature = JSON.stringify([audio.devices, audio.current]);
+    if ($('audioDevice').dataset.signature !== signature) {
+      $('audioDevice').replaceChildren();
+      for (const device of ['', ...(audio.devices || [])]) {
+        const option = document.createElement('option');
+        option.value = device; option.textContent = device || '系统默认输入';
+        option.selected = device === (audio.current || '');
+        $('audioDevice').append(option);
+      }
+      if (audio.current && !(audio.devices || []).includes(audio.current)) {
+        const unavailable = document.createElement('option');
+        unavailable.value = audio.current; unavailable.textContent = audio.current + '（已保存，当前不可用）';
+        unavailable.selected = true; $('audioDevice').append(unavailable);
+      }
+      $('audioDevice').dataset.signature = signature;
+    }
+  } catch (error) { $('audioStatus').textContent = '无法查询录音状态：' + error.message; }
+}
+
+async function switchAudio() {
+  $('audioApply').disabled = true;
+  if (await act('/api/audio', {device: $('audioDevice').value})) toast('已请求连接，请查看状态');
+  await pollAudio();
 }
 
 document.querySelectorAll('.tab').forEach(el => {
@@ -582,6 +655,8 @@ document.querySelectorAll('.tab').forEach(el => {
 
 poll();
 setInterval(poll, 1500);
+pollAudio();
+setInterval(pollAudio, 1500);
 </script>
 </body>
 </html>

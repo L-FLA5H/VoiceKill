@@ -19,6 +19,10 @@ repositories {
         }
     }
     mavenCentral()
+    maven {
+        url = 'https://jitpack.io'
+        content { includeGroup 'com.github.k2-fsa.sherpa-onnx' }
+    }
 }
 
 dependencies {
@@ -32,6 +36,67 @@ dependencies {
     // 语音识别（Shriek 自身依赖 Architectury，必须一起装）
     modImplementation "maven.modrinth:shriek:${project.shriek_version}"
     modImplementation "maven.modrinth:architectury-api:${project.architectury_version}"
+    // JVM API 与三个目标平台的 JNI，模型权重独立缓存，不打进模组。
+    ['sherpa-onnx-jvm', 'sherpa-onnx-native-lib-win-x64',
+     'sherpa-onnx-native-lib-osx-x64', 'sherpa-onnx-native-lib-osx-aarch64'].each { artifact ->
+        def coordinate = "com.github.k2-fsa.sherpa-onnx:${artifact}:1.13.5"
+        implementation coordinate
+        include coordinate
+    }
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.11.4'
+}
+
+tasks.named('test') { useJUnitPlatform() }
+
+// 只读音频回放基准：不启动游戏、不打开麦克风。
+tasks.register('benchmarkAsr', JavaExec) {
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.example.voicekill.client.ModelBenchmark'
+    args project.findProperty('zipformerDir') ?: '.local/models/zipformer-bilingual-small',
+         project.findProperty('audioDir') ?: '.local/models/zipformer-bilingual-small',
+         project.findProperty('voskDir') ?: '',
+         project.findProperty('benchmarkOutput') ?: '.local/diagnostics/sherpa/benchmark.json'
+}
+
+tasks.register('prepareAsrModel', JavaExec) {
+    dependsOn tasks.named('classes')
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.example.voicekill.client.SpeechModels'
+    args project.findProperty('zipformerDir') ?: '.local/models/zipformer-bilingual-small'
+}
+
+tasks.register('replayNicknames', JavaExec) {
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.example.voicekill.client.NicknameReplay'
+    args project.findProperty('zipformerDir') ?: '.local/models/zipformer-bilingual-small',
+         project.findProperty('corpusDir') ?: '.local/diagnostics/nickname-replay/corpus',
+         project.findProperty('replayRounds') ?: '3',
+         project.findProperty('replayOutput') ?: '.local/diagnostics/nickname-replay/results.json',
+         project.findProperty('replayEngine') ?: 'zipformer',
+         project.findProperty('replayWords') ?: '',
+         project.findProperty('replayRealtime') ?: 'true',
+         project.findProperty('replayClips') ?: ''
+}
+
+tasks.register('probeDecoder', JavaExec) {
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.example.voicekill.client.DecoderAblation'
+    args project.findProperty('probeCorpus') ?: '.local/diagnostics/nickname-replay/corpus',
+         project.findProperty('probeOutput') ?: '.local/diagnostics/nickname-replay/optimization/ablation.json',
+         project.findProperty('probeStage') ?: 'recognition',
+         project.findProperty('zipformerDir') ?: '.local/models/zipformer-bilingual-small',
+         project.findProperty('probeWords') ?: ''
+}
+
+tasks.register('probeSenseVoice', JavaExec) {
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.example.voicekill.client.SenseVoiceProbe'
+    if (project.hasProperty('probeCorpus')) args project.property('probeCorpus'), project.property('probeOutput'), project.findProperty('probeWords') ?: ''
 }
 
 processResources {

@@ -34,7 +34,7 @@ public final class WordAliases {
      * 这些不是「标准音译」，是**Vosk 中文小模型实际会吐出来的字**，所以故意选了口语化的写法。
      */
     private static final String[][] LETTER_CANDIDATES = {
-            /* a */ {"诶", "哎", "阿", "啊", "欸"},
+            /* a */ {"诶", "哎", "阿", "啊", "欸", "爱", "艾"},
             /* b */ {"比", "逼", "毕", "币"},
             /* c */ {"西", "希", "溪", "洗"},
             /* d */ {"地", "弟", "的", "底", "迪", "滴"},
@@ -75,6 +75,10 @@ public final class WordAliases {
     private static final java.util.Map<Character, String> HOMOPHONES = new java.util.HashMap<>();
 
     static {
+        HOMOPHONES.put('汤', "唐糖趟");
+        HOMOPHONES.put('唐', "汤糖");
+        HOMOPHONES.put('宝', "包保堡");
+        HOMOPHONES.put('包', "宝保");
         // ---- 高频虚词 ----
         HOMOPHONES.put('她', "他它塔");
         HOMOPHONES.put('他', "她它塔");
@@ -297,7 +301,7 @@ public final class WordAliases {
         }
 
         // 3) 中文 → 同音字变体（「她」被识别成「他/它」也算中）
-        if (hasChinese(trimmed)) {
+        if (hasChinese(trimmed) && TextUtil.normalize(trimmed).length() > 1) {
             out.addAll(homophoneVariants(trimmed));
         }
 
@@ -305,6 +309,31 @@ public final class WordAliases {
         String normalizedSelf = TextUtil.normalize(trimmed);
         out.removeIf(a -> TextUtil.normalize(a).equals(normalizedSelf));
         return new ArrayList<>(out);
+    }
+
+    /** 按位置匹配读音，避免笛卡尔积被展示用的 48 个别名上限截断。 */
+    public static java.util.regex.Pattern pronunciationPattern(String word, boolean chineseHomophones) {
+        String normalized = TextUtil.normalize(word);
+        if (!hasAsciiLetter(normalized) && !chineseHomophones) return null;
+        if (normalized.isEmpty() || normalized.length() > 64) return null;
+        StringBuilder pattern = new StringBuilder();
+        for (char c : normalized.toCharArray()) {
+            Set<String> choices = new LinkedHashSet<>();
+            choices.add(String.valueOf(c));
+            if (c < 128 && Character.isLetter(c)) {
+                choices.addAll(java.util.Arrays.asList(candidatesFor(c)));
+            } else if (chineseHomophones) {
+                String alternatives = HOMOPHONES.get(c);
+                if (alternatives != null) {
+                    for (char alternative : alternatives.toCharArray()) choices.add(String.valueOf(alternative));
+                }
+            }
+            pattern.append("(?:");
+            pattern.append(choices.stream().map(java.util.regex.Pattern::quote)
+                    .collect(java.util.stream.Collectors.joining("|")));
+            pattern.append(')');
+        }
+        return java.util.regex.Pattern.compile(pattern.toString());
     }
 
     private static boolean hasChinese(String word) {

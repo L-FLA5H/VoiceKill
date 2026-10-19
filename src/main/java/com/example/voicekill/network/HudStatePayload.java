@@ -28,7 +28,7 @@ public record HudStatePayload(
     public static final CustomPacketPayload.Type<HudStatePayload> TYPE =
             new CustomPacketPayload.Type<>(Identifier.fromNamespaceAndPath("voicekill", "hud"));
 
-    private static final int MAX_WORDS = 12;
+    private static final int MAX_WORDS = 20;
     private static final int MAX_BOARD = 8;
 
     public static final StreamCodec<RegistryFriendlyByteBuf, HudStatePayload> CODEC =

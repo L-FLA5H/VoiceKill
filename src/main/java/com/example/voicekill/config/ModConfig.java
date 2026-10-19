@@ -71,9 +71,26 @@ public final class ModConfig {
      */
     public String voskModel = "vosk-model-small-cn-0.22";
 
+    /** 默认中英双语流式模型；vosk 为兼容模式。 */
+    public String speechEngine = "zipformer";
+    public int speechThreads = 1;
+    /** 只提示带英文字母的多字昵称；不提示中文单字。 */
+    public boolean speechContextHints = true;
+    public float speechEndpointSilenceSeconds = .35f;
+    /** 无停顿时的最大语音段时长；还需加解码、网络和游戏 tick 时间。 */
+    public float speechMaxUtteranceSeconds = 5f;
+    public boolean allowVoskFallback = true;
+    /** 留空时缓存到游戏目录 voicekill/models/zipformer-bilingual-small-int8。 */
+    public String speechModelDir = "";
+    /** 离线句末复核及标点；后台加载失败时继续基础识别。 */
+    public boolean speechSentenceReview = true;
+    public boolean speechPunctuation = true;
+    /** 留空使用游戏目录 voicekill/models；子目录为模型清单 ID。 */
+    public String speechPostModelDir = "";
+
     /**
-     * 是否让本模组自动准备语音模型（首次约 40MB，走后台线程，不卡游戏）。
-     * 关掉的话 Shriek 会用它自己的默认模型（英文）。
+     * 是否自动准备语音模型（基础约 60MB，可选句末模型另约 315MB，后台准备）。
+     * 关掉后只使用本地已安装的指定模型；缺少模型会提示错误，不静默切换为英文。
      */
     public boolean autoModelDownload = true;
 
@@ -84,7 +101,7 @@ public final class ModConfig {
     public boolean hudShowBoard = true;
 
     /**
-     * 指定录音设备（设备名的子串即可，留空 = 系统默认设备）。
+     * 指定录音设备（优先完整名称，子串必须唯一，留空 = 系统默认设备）。
      * 启动时会把可用设备列到日志里。
      */
     public String audioDevice = "";
@@ -191,6 +208,14 @@ public final class ModConfig {
         if (intervalSeconds > 3600) intervalSeconds = 3600;
 
         if (voskModel == null) voskModel = "";
+        if (!"zipformer".equals(speechEngine) && !"vosk".equals(speechEngine)) speechEngine = "zipformer";
+        speechThreads = Math.max(1, Math.min(4, speechThreads));
+        if (!Float.isFinite(speechEndpointSilenceSeconds)) speechEndpointSilenceSeconds = .35f;
+        speechEndpointSilenceSeconds = Math.max(.35f, Math.min(1.5f, speechEndpointSilenceSeconds));
+        if (!Float.isFinite(speechMaxUtteranceSeconds)) speechMaxUtteranceSeconds = 5f;
+        speechMaxUtteranceSeconds = Math.max(2f, Math.min(15f, speechMaxUtteranceSeconds));
+        if (speechModelDir == null) speechModelDir = "";
+        if (speechPostModelDir == null) speechPostModelDir = "";
 
         if (webPort < 1024 || webPort > 65535) webPort = 38471;
         if (smartPickChance < 0) smartPickChance = 0;
