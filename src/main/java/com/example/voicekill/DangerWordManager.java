@@ -58,6 +58,11 @@ public final class DangerWordManager {
     private int ticksElapsed;
     private final List<Map<String, Object>> history = new ArrayList<>();
     private MinecraftServer lastServer;
+    private String recognitionSession=java.util.UUID.randomUUID().toString();
+    private String recognitionRound;
+    private final com.example.voicekill.speech.RecognitionSilence recognitionSilence=new com.example.voicekill.speech.RecognitionSilence();
+    private final com.example.voicekill.speech.RecognitionHealth recognitionHealth=new com.example.voicekill.speech.RecognitionHealth();
+    private long silenceTick;
 
     /** 是否已经 /voicekill start 开始游戏 */
     private boolean running = false;
@@ -69,7 +74,7 @@ public final class DangerWordManager {
 
     private void updateWords(List<WordSlot> words) {
         currentWords = List.copyOf(words);
-        SpeechHandler.reset();
+        recognitionRound=SpeechHandler.changeWords(matchingWords());
         previewWindow.clear();
         speechPreview = Map.of();
     }
@@ -94,6 +99,8 @@ public final class DangerWordManager {
     /** 服务端启动时调用：先把 server 引用接上，并立刻发布一份初始快照给网页 */
     public void attach(MinecraftServer server) {
         this.lastServer = server;
+        recognitionSession=java.util.UUID.randomUUID().toString();
+        recognitionHealth.reset(recognitionSession);silenceTick=0;
         publishSnapshot(server);
     }
 
@@ -110,6 +117,7 @@ public final class DangerWordManager {
 
         // 没开始游戏：只维持网页/四角的状态显示，不计时、不轮换
         if (!running) {
+            tickRecognitionSilence(server);
             if (server.getTickCount() % TICKS_PER_SECOND == 0) {
                 publishSnapshot(server);
             }
@@ -127,6 +135,8 @@ public final class DangerWordManager {
             }
         }
 
+        tickRecognitionSilence(server);
+
         if (server.getTickCount() % TICKS_PER_SECOND == 0) {
             publishSnapshot(server);
         }
@@ -135,9 +145,13 @@ public final class DangerWordManager {
     public boolean isRunning() {
         return running;
     }
+    public com.example.voicekill.speech.PhoneticMatcher.Settings phoneticSettings(){return config.phoneticSettings();}
+    public boolean logSpeech(){return config.logSpeech;}
 
     /** /voicekill start：清空本周期统计，重新组一组词，开始计时 */
     public void start(MinecraftServer server) {
+        SpeechHandler.reset();recognitionSession=java.util.UUID.randomUUID().toString();
+        recognitionSilence.clear();recognitionHealth.bindSession(recognitionSession);
         this.running = true;
         this.nextWords = List.of();
         this.history.clear();
@@ -156,10 +170,46 @@ public final class DangerWordManager {
     /** /voicekill stop：停表、停止判定（榜单保留） */
     public void stop(MinecraftServer server) {
         this.running = false;
+        recognitionSilence.clear();
         SpeechHandler.reset();
         this.ticksElapsed = 0;
         VoiceKillMod.LOGGER.info("[VoiceKill] 游戏已停止（/voicekill start 重新开始）");
         publishSnapshot(server);
+    }
+
+    private static boolean silenceEligible(ServerPlayer player){return player!=null&&!player.hasDisconnected()&&!player.isDeadOrDying()&&!player.isCreative()&&!player.isSpectator();}
+    private void resetRecognition(ServerPlayer player) {
+        if(!running||!silenceEligible(player)||!canRecognize(player))return;
+        recognitionSilence.configure(config.silenceRules());
+        recognitionSilence.recognized(player.getUUID().toString(),silenceTick);
+    }
+    /** A partial-text activity notice is deliberately separate from danger-word judging. */
+    public void recordRecognition(ServerPlayer player,String session){var server=player.level().getServer();if(server==null)return;if(!server.isSameThread()){server.execute(()->recordRecognition(player,session));return;}if(recognitionSession.equals(session))resetRecognition(player);}
+    public void recordRecognizedText(ServerPlayer player,String text){if(com.example.voicekill.speech.RecognitionSilence.hasText(text))resetRecognition(player);}
+    public boolean canRecognize(ServerPlayer player){return player==null||recognitionHealth.ready(player.getUUID().toString(),silenceTick);}
+    public void recordRecognitionHealth(ServerPlayer player,String session,com.example.voicekill.speech.RecognitionHealth.Issue issue) {
+        var server=player.level().getServer();if(server==null)return;
+        if(!server.isSameThread()){server.execute(()->recordRecognitionHealth(player,session,issue));return;}
+        if(player.hasDisconnected())return;
+        String id=player.getUUID().toString();boolean wasReady=recognitionHealth.ready(id,silenceTick);
+        if(!recognitionHealth.report(id,session,issue,silenceTick))return;
+        if(!wasReady||issue!=com.example.voicekill.speech.RecognitionHealth.Issue.READY){recognitionSilence.forget(id);SpeechHandler.forget(player);}
+    }
+    public void forgetRecognition(ServerPlayer player){String id=player.getUUID().toString();recognitionSilence.forget(id);recognitionHealth.forget(id);}
+    private void tickRecognitionSilence(MinecraftServer server) {
+        recognitionSilence.configure(config.silenceRules());silenceTick++;
+        for(ServerPlayer player:server.getPlayerList().getPlayers()) {
+            String id=player.getUUID().toString();boolean ready=canRecognize(player);
+            if(!ready)SpeechHandler.forget(player);
+            if(!player.isDeadOrDying()&&recognitionHealth.noticeDue(id,silenceTick))
+                player.displayClientMessage(Component.literal("[VoiceKill] "+recognitionHealth.issue(id,silenceTick).warning()).withStyle(ChatFormatting.YELLOW),true);
+            if(!recognitionSilence.step(id,silenceTick,running&&silenceEligible(player)&&ready))continue;
+            float amount=recognitionSilence.rules().damageAmount();
+            if(player.hurtServer(player.level(),SilenceDamage.source(player),amount)) {
+                player.displayClientMessage(Component.literal("[VoiceKill] 未识别到新文字，扣除 "+amount+" 点生命").withStyle(ChatFormatting.RED),true);
+                if(player.isDeadOrDying()) {recordDeath(player.getName().getString());SpeechHandler.forget(player);forgetRecognition(player);}
+            }
+        }
     }
 
     /** 把四角要显示的东西推给所有客户端 */
@@ -179,9 +229,11 @@ public final class DangerWordManager {
                 config.intervalSeconds,
                 deathBoard.top(5),
                 deathBoard.total());
+        var lexicon=com.example.voicekill.network.RecognitionLexiconPayload.of(matchingWords(),recognitionSession,recognitionRound,running);
         for (ServerPlayer player : players) {
             try {
                 ServerPlayNetworking.send(player, payload);
+                if(ServerPlayNetworking.canSend(player,com.example.voicekill.network.RecognitionLexiconPayload.TYPE))ServerPlayNetworking.send(player,lexicon);
             } catch (Throwable ignored) {
                 // 客户端没装本模组 / 通道没注册时不要炸 tick
             }
@@ -322,7 +374,7 @@ public final class DangerWordManager {
         if (trimmed.isEmpty()) return false;
         if (!used.add(normalize(trimmed))) return false;
         // 谐音变体在这里算一次并缓存，匹配时不用反复生成
-        target.add(new WordSlot(trimmed, source, WordAliases.variants(trimmed, config)));
+        target.add(new WordSlot(trimmed, source, WordAliases.variants(trimmed, config, !"highfreq".equals(source) && !"smart".equals(source))));
         return true;
     }
 
@@ -394,13 +446,17 @@ public final class DangerWordManager {
      * @return 命中的那个词；没命中返回 null
      */
     public List<com.example.voicekill.speech.WordMatcher.Word> matchingWords() {
+        Set<String> preferred = new HashSet<>();
+        config.dangerWords.forEach(word -> preferred.add(normalize(word)));
+        config.nameWords.forEach(word -> preferred.add(normalize(word)));
         return currentWords.stream().map(slot -> new com.example.voicekill.speech.WordMatcher.Word(
-                slot.word(), slot.source(), slot.aliases())).toList();
+                slot.word(), slot.source(), slot.aliases(), preferred.contains(normalize(slot.word()))
+                    || "manual".equals(slot.source()) || "name".equals(slot.source()))).toList();
     }
 
     public String match(String speechText) {
         if (!running) return null;
-        var hit = com.example.voicekill.speech.WordMatcher.find(matchingWords(), speechText, false, 0);
+        var hit = com.example.voicekill.speech.PhoneticMatcher.find(matchingWords(),speechText,config.phoneticSettings());
         return hit == null ? null : hit.word();
     }
 
@@ -582,7 +638,7 @@ public final class DangerWordManager {
     public void requestPreviewSpeech(String text) {
         onServer(server -> {
             var packet = com.example.voicekill.speech.SpeechPacket.parse(text);
-            var result = previewWindow.accept("preview", packet, matchingWords(), System.currentTimeMillis());
+            var result = previewWindow.acceptFinal("preview", packet, matchingWords(), System.currentTimeMillis(),config.phoneticSettings());
             Map<String, Object> preview = new LinkedHashMap<>();
             preview.put("text", text == null ? "" : text);
             preview.put("matched", result.hit() != null);
@@ -707,6 +763,14 @@ public final class DangerWordManager {
     /** 网页改配置；参数都可以为 null（表示这一项不动） */
     public void requestUpdateConfig(Integer intervalSeconds, Boolean smartPick, Integer smartPickChance,
                                     Integer wordsPerRound, Integer highFreqPerRound, Integer namesPerRound) {
+        requestUpdateConfig(intervalSeconds,smartPick,smartPickChance,wordsPerRound,highFreqPerRound,namesPerRound,null,null,null,null);
+    }
+    public void requestUpdateConfig(Integer intervalSeconds,Boolean smartPick,Integer smartPickChance,Integer wordsPerRound,Integer highFreqPerRound,Integer namesPerRound,
+                                    Boolean silenceEnabled,Float silenceTimeout,Float silenceDamage,Float silenceInterval) {
+        requestUpdateConfig(intervalSeconds,smartPick,smartPickChance,wordsPerRound,highFreqPerRound,namesPerRound,silenceEnabled,silenceTimeout,silenceDamage,silenceInterval,null,null);
+    }
+    public void requestUpdateConfig(Integer intervalSeconds,Boolean smartPick,Integer smartPickChance,Integer wordsPerRound,Integer highFreqPerRound,Integer namesPerRound,
+                                    Boolean silenceEnabled,Float silenceTimeout,Float silenceDamage,Float silenceInterval,Boolean phoneticEnabled,Float phoneticThreshold) {
         onServer(server -> {
             boolean intervalChanged = false;
             if (intervalSeconds != null) {
@@ -731,6 +795,14 @@ public final class DangerWordManager {
             if (namesPerRound != null) {
                 config.namesPerRound = Math.max(0, Math.min(config.wordsPerRound, namesPerRound));
             }
+            config.applySilenceRules(new com.example.voicekill.speech.RecognitionSilence.Rules(
+                    silenceEnabled==null?config.silencePenaltyEnabled:silenceEnabled,
+                    silenceTimeout==null?config.silenceTimeoutSeconds:silenceTimeout,
+                    silenceDamage==null?config.silenceDamageAmount:silenceDamage,
+                    silenceInterval==null?config.silenceDamageIntervalSeconds:silenceInterval));
+            recognitionSilence.configure(config.silenceRules());
+            if(phoneticEnabled!=null)config.phoneticMatching=phoneticEnabled;
+            if(phoneticThreshold!=null)config.phoneticThreshold=new com.example.voicekill.speech.PhoneticMatcher.Settings(config.phoneticMatching,phoneticThreshold).threshold();
             config.save();
 
             if (intervalChanged) {
@@ -775,6 +847,12 @@ public final class DangerWordManager {
         map.put("wordsPerRound", config.wordsPerRound);
         map.put("highFreqPerRound", config.highFreqPerRound);
         map.put("intervalSeconds", config.intervalSeconds);
+        map.put("silencePenaltyEnabled",config.silencePenaltyEnabled);
+        map.put("phoneticMatching",config.phoneticMatching);
+        map.put("phoneticThreshold",config.phoneticThreshold);
+        map.put("silenceTimeoutSeconds",config.silenceTimeoutSeconds);
+        map.put("silenceDamageAmount",config.silenceDamageAmount);
+        map.put("silenceDamageIntervalSeconds",config.silenceDamageIntervalSeconds);
         map.put("remainingSeconds", Math.max(0, ticksUntilRotate / TICKS_PER_SECOND));
         map.put("elapsedSeconds", ticksElapsed / TICKS_PER_SECOND);
 

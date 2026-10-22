@@ -274,6 +274,9 @@ public final class WordAliases {
 
     /** 取得某个词的全部别名（手动配置的 + 自动生成的），已去掉和原词相同的项 */
     public static List<String> variants(String word, ModConfig config) {
+        return variants(word,config,true);
+    }
+    public static List<String> variants(String word,ModConfig config,boolean chineseAuto) {
         Set<String> out = new LinkedHashSet<>();
         if (word == null || word.isBlank()) {
             return List.of();
@@ -301,7 +304,7 @@ public final class WordAliases {
         }
 
         // 3) 中文 → 同音字变体（「她」被识别成「他/它」也算中）
-        if (hasChinese(trimmed) && TextUtil.normalize(trimmed).length() > 1) {
+        if (chineseAuto && hasChinese(trimmed) && TextUtil.normalize(trimmed).length() > 1) {
             out.addAll(homophoneVariants(trimmed));
         }
 

@@ -21,9 +21,14 @@ import java.util.List;
  */
 public class MicScreen extends Screen {
     private int page;
+    private final Screen parent;
 
     public MicScreen() {
+        this(null);
+    }
+    public MicScreen(Screen parent) {
         super(Component.literal("音频输入设备 · 连接成功后自动保存"));
+        this.parent=parent;
     }
 
     @Override
@@ -70,6 +75,8 @@ public class MicScreen extends Screen {
             Thread thread = new Thread(MicCapture::stop, "VoiceKill-MicStop");
             thread.setDaemon(true); thread.start();
         }).bounds(x, this.height - 72, 100, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("模组设置 · F7"),b->Minecraft.getInstance().setScreen(new ModSettingsScreen(this)))
+                .bounds(x+104,this.height-72,width-104,20).build());
 
         addRenderableWidget(Button.builder(Component.literal("关闭"), b -> onClose())
                 .bounds(x, this.height - 30, width, 20)
@@ -83,6 +90,7 @@ public class MicScreen extends Screen {
         }
         return Component.literal((saved ? "✔ " : "   ") + shown);
     }
+    @Override public void onClose(){Minecraft.getInstance().setScreen(parent);}
 
     private void apply(String device) {
         String shown = (device == null || device.isBlank()) ? "系统默认" : device;
@@ -129,6 +137,7 @@ public class MicScreen extends Screen {
             case "failed" -> "连接失败：" + MicCapture.error();
             default -> "录音已停止 · 选择设备可重新连接";
         };
+        if(MicCapture.isRunning()&&MicCapture.issue()!=com.example.voicekill.speech.RecognitionHealth.Issue.READY)status=MicCapture.issue().warning();
         String shown = status;
         while (!shown.isEmpty() && font.width(shown + "…") > this.width - 24) {
             shown = shown.substring(0, shown.length() - 1);

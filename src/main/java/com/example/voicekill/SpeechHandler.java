@@ -20,10 +20,11 @@ public final class SpeechHandler {
 
     private static boolean registered = false;
 
-    private static final com.example.voicekill.speech.SpeechWindow WINDOW = new com.example.voicekill.speech.SpeechWindow();
+    private static final com.example.voicekill.speech.RoundSpeechWindow WINDOW = new com.example.voicekill.speech.RoundSpeechWindow();
     private static final java.util.Map<String, Long> LAST_MOJIBAKE_WARN = new java.util.HashMap<>();
 
     public static void reset() { WINDOW.clear(); LAST_MOJIBAKE_WARN.clear(); }
+    public static String changeWords(java.util.List<com.example.voicekill.speech.WordMatcher.Word> words){return WINDOW.rotate(words,System.currentTimeMillis());}
     public static void forget(ServerPlayer player) { WINDOW.forget(player.getUUID().toString()); }
 
     private SpeechHandler() {
@@ -71,25 +72,29 @@ public final class SpeechHandler {
             if (player.hasDisconnected() || player.isDeadOrDying()) return;
         }
         if (!manager.isRunning()) return;
+        if(!manager.canRecognize(player))return;
         var packet = com.example.voicekill.speech.SpeechPacket.parse(rawPacketText);
         if (packet.candidates().isEmpty()) return;
-        String text = packet.candidates().getFirst();
+        String rawText = packet.candidates().getFirst();
+        String text = com.example.voicekill.speech.GameTerms.display(rawText,packet.finalText(),packet.reviewConfirmed());
         String speaker = player == null ? "simulation" : player.getUUID().toString();
-        var result = WINDOW.accept(speaker, packet, manager.matchingWords(), System.currentTimeMillis());
-        if (result.duplicate()) return;
+        var result = WINDOW.accept(speaker, packet, System.currentTimeMillis(),manager.phoneticSettings());
+        if(result.duplicate())return;
+        if(result.stale()){if(manager.logSpeech())VoiceKillMod.LOGGER.info("[VoiceKill] 语音未判定：轮次范围已失效，event={}",packet.eventId());return;}
+        manager.recordRecognizedText(player,text);
         warnIfMojibake(speaker, text);
         manager.stats().record(text);
         ModConfig config = ModConfig.get();
         if (config != null && config.logSpeech) {
-            VoiceKillMod.LOGGER.info("[VoiceKill] 语音 {}：{}；候选 {}", player == null ? "模拟" : player.getName().getString(),
-                    text, packet.candidates());
+            VoiceKillMod.LOGGER.info("[VoiceKill] 语音 {}：{}；候选 {}；最终判定={}；读音模糊={}/{}", player == null ? "模拟" : player.getName().getString(),
+                    text, packet.candidates(),result.hit()==null?"未命中":result.hit().word(),manager.phoneticSettings().enabled(),manager.phoneticSettings().threshold());
         }
         if (result.hit() == null) return;
         var hit = result.hit();
         VoiceKillMod.LOGGER.info("[VoiceKill] 命中「{}」：方式={}，证据「{}」，候选={}，最优文本「{}」",
                 hit.word(), hit.mode(), hit.evidence(), result.candidate() + 1, text);
         if (player != null) {
-            punish(manager, player, hit.word(), text);
+            punish(manager, player, hit.word(), rawText, text);
         }
     }
 
@@ -119,7 +124,7 @@ public final class SpeechHandler {
                 + "让他给 JVM 参数加 -Dfile.encoding=UTF-8 再启动游戏", who);
     }
 
-    private static void punish(DangerWordManager manager, ServerPlayer player, String matched, String rawText) {
+    private static void punish(DangerWordManager manager, ServerPlayer player, String matched, String rawText, String confirmedText) {
         if (player.isDeadOrDying()) {
             return;
         }
@@ -127,7 +132,10 @@ public final class SpeechHandler {
         VoiceKillMod.LOGGER.info("[VoiceKill] {} 说出了危险词「{}」→ 执行 kill（识别原文：{}）",
                 player.getName().getString(), matched, rawText);
 
-        announceKill(matched, player, rawText);
+        ModConfig config=ModConfig.get();
+        Component deathMessage=config!=null&&config.customDeathMessages
+                ? DeathMessages.render(DeathMessages.choose(DeathMessages.pool(config.deathMessageStyle,config.deathMessages),java.util.concurrent.ThreadLocalRandom.current()),player.getDisplayName(),matched):null;
+        announceKill(matched,player,rawText,confirmedText);
 
         // 记一笔言多必失
         manager.recordDeath(player.getName().getString());
@@ -135,20 +143,34 @@ public final class SpeechHandler {
         // 死完清掉尾巴，避免复活瞬间被上一句拼出来的词再带走一次
         WINDOW.forget(player.getUUID().toString());
 
-        // 这就是 /kill：直接抹掉，不走命令、不发数据包。
-        // 注意 1.21.11 的签名是 kill(ServerLevel)，不是无参的 kill()
-        player.kill(player.level());
+        // Minecraft 1.21.11 LivingEntity.kill calls hurtServer(genericKill, Float.MAX_VALUE).
+        // Keep the same registered damage type/tags and amount, replacing only death text.
+        if(deathMessage==null)player.kill(player.level());
+        else player.hurtServer(player.level(),DeathMessages.source(player.damageSources().genericKill(),deathMessage),Float.MAX_VALUE);
     }
 
     /** 在聊天栏告诉所有人谁踩雷了 */
-    private static void announceKill(String matched, ServerPlayer victim, String rawText) {
+    private static void announceKill(String matched, ServerPlayer victim, String rawText, String confirmedText) {
         MinecraftServer server = victim.level().getServer();
         if (server == null) {
             return;
         }
-        Component message = Component.literal("[VoiceKill] ")
+        Component message = killNotice(matched,victim.getName().getString(),rawText,confirmedText);
+
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            player.displayClientMessage(message, false);
+        }
+    }
+    /** Keep the original transcript visible alongside the styled native death message. */
+    static Component killNotice(String matched,String victimName,String rawText,String confirmedText) {
+        var message=killNotice(matched,victimName,rawText).copy();
+        if(!rawText.equals(confirmedText))message.append(Component.literal("（复核："+confirmedText+"）").withStyle(ChatFormatting.GRAY));
+        return message;
+    }
+    static Component killNotice(String matched,String victimName,String rawText) {
+        return Component.literal("[VoiceKill] ")
                 .withStyle(ChatFormatting.DARK_RED, ChatFormatting.BOLD)
-                .append(Component.literal(victim.getName().getString())
+                .append(Component.literal(victimName)
                         .withStyle(ChatFormatting.WHITE))
                 .append(Component.literal(" 说出了危险词「")
                         .withStyle(ChatFormatting.GRAY))
@@ -161,8 +183,6 @@ public final class SpeechHandler {
                 .append(Component.literal("）")
                         .withStyle(ChatFormatting.GRAY));
 
-        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            player.displayClientMessage(message, false);
-        }
     }
+
 }

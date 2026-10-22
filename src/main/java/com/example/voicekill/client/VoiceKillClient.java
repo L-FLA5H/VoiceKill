@@ -32,6 +32,7 @@ public class VoiceKillClient implements ClientModInitializer {
     private int ticks;
     private boolean started;
     private static KeyMapping micKey;
+    private static KeyMapping settingsKey;
 
     @Override
     public void onInitializeClient() {
@@ -46,7 +47,11 @@ public class VoiceKillClient implements ClientModInitializer {
                     HudOverlay.update(payload);
                     MicCapture.updateRecognitionWords(payload.words());
                 }));
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> MicCapture.updateRecognitionWords(java.util.List.of()));
+        ClientPlayNetworking.registerGlobalReceiver(com.example.voicekill.network.RecognitionLexiconPayload.TYPE,(payload,context)->
+                context.client().execute(()->MicCapture.updateRecognitionRound(payload)));
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+            MicCapture.disconnected();HotbarHint.clear();
+        });
 
         // 2) 注册四角常驻显示
         HudElementRegistry.addLast(
@@ -65,6 +70,13 @@ public class VoiceKillClient implements ClientModInitializer {
                 InputConstants.Type.KEYSYM,
                 GLFW.GLFW_KEY_F8,
                 category));
+        settingsKey=KeyBindingHelper.registerKeyBinding(new KeyMapping("key.voicekill.settings",InputConstants.Type.KEYSYM,GLFW.GLFW_KEY_F7,category));
+        net.fabricmc.fabric.api.client.screen.v1.ScreenEvents.AFTER_INIT.register((client,screen,width,height)->{
+            if(screen instanceof net.minecraft.client.gui.screens.TitleScreen || screen instanceof net.minecraft.client.gui.screens.PauseScreen)
+                net.fabricmc.fabric.api.client.screen.v1.Screens.getButtons(screen).add(net.minecraft.client.gui.components.Button.builder(
+                        net.minecraft.network.chat.Component.literal("VoiceKill 设置"),b->client.setScreen(new ModSettingsScreen(screen)))
+                        .bounds(width-112,8,104,20).build());
+        });
 
         // 6) 退出游戏时把我们自己的录音线程干净地关掉
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> MicCapture.stop());
@@ -74,6 +86,8 @@ public class VoiceKillClient implements ClientModInitializer {
     }
 
     private void tick() {
+        MicCapture.tickHealth();
+        if(settingsKey!=null)while(settingsKey.consumeClick())Minecraft.getInstance().setScreen(new ModSettingsScreen(Minecraft.getInstance().screen));
         // 快捷键优先处理，不受模型准备流程影响
         if (micKey != null) {
             while (micKey.consumeClick()) {
@@ -88,7 +102,7 @@ public class VoiceKillClient implements ClientModInitializer {
 
         if (!started && ++ticks >= START_DELAY_TICKS) {
             started = true;
-            if (!MicCapture.hasAttempted()) {
+            if (config.autoStartMicrophone && !MicCapture.hasAttempted()) {
                 Thread thread = new Thread(() -> MicCapture.start(config.audioDevice), "VoiceKill-MicStartup");
                 thread.setDaemon(true);
                 thread.start();

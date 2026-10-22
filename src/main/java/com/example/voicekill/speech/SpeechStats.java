@@ -130,7 +130,7 @@ public final class SpeechStats {
         return (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0x3400 && c <= 0x4DBF);
     }
 
-    /** 中文片段 → 2~4 字 n-gram（整段不足 4 字时整段也算一个词） */
+    /** 中文片段 → 2~4 字 n-gram；独立单字另外处理，整段不重复计数 */
     private void flushCjk(StringBuilder sb, Map<String, Integer> out) {
         if (sb.isEmpty()) {
             return;
@@ -138,7 +138,7 @@ public final class SpeechStats {
         String s = sb.toString();
         sb.setLength(0);
 
-        if (s.length() <= MAX_GRAM) {
+        if (s.length() == 1) {
             addWord(s, out);
         }
         for (int n = 2; n <= MAX_GRAM; n++) {

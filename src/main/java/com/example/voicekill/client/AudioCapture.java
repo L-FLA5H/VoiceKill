@@ -21,7 +21,7 @@ public final class AudioCapture implements CaptureSession.Source {
 
     public static List<AudioFormat> formats() {
         List<AudioFormat> formats = new ArrayList<>();
-        for (float rate : new float[]{16000, 48000, 44100}) {
+        for (float rate : new float[]{16000, 48000, 44100, 8000}) {
             for (int channels : new int[]{1, 2}) formats.add(new AudioFormat(rate, 16, channels, true, false));
         }
         return List.copyOf(formats);
@@ -29,15 +29,46 @@ public final class AudioCapture implements CaptureSession.Source {
 
     public static List<String> devices() {
         List<String> names = new ArrayList<>();
-        for (Mixer.Info info : AudioSystem.getMixerInfo()) {
+        for (Mixer mixer : mixers()) {
             try {
-                Mixer mixer = AudioSystem.getMixer(info);
-                if (formats().stream().anyMatch(format -> mixer.isLineSupported(new DataLine.Info(TargetDataLine.class, format)))) {
-                    names.add(info.getName());
-                }
+                if (supportsInput(mixer)) names.add(mixer.getMixerInfo().getName());
             } catch (RuntimeException ignored) { /* 单个驱动失败不隐藏其他设备 */ }
         }
-        return List.copyOf(names);
+        return names.stream().distinct().toList();
+    }
+
+    private static List<Mixer> mixers() {
+        List<Mixer> available = new ArrayList<>();
+        for (Mixer.Info info : AudioSystem.getMixerInfo()) {
+            try { available.add(AudioSystem.getMixer(info)); }
+            catch (RuntimeException ignored) { /* 单个驱动不可用时继续其他设备 */ }
+        }
+        return available;
+    }
+
+    private static boolean supportsInput(Mixer mixer) {
+        for (Line.Info info : mixer.getTargetLineInfo())
+            if (TargetDataLine.class.isAssignableFrom(info.getLineClass())) return true;
+        return formats().stream().anyMatch(format -> mixer.isLineSupported(new DataLine.Info(TargetDataLine.class, format)));
+    }
+
+    /** 优先常见格式，再尝试驱动明确报告、且 Java Sound 能转换的原生 PCM 格式。 */
+    private static List<AudioFormat> captureFormats(Mixer mixer) {
+        List<AudioFormat> candidates = new ArrayList<>(formats());
+        if (mixer != null) {
+            try {
+                for (Line.Info line : mixer.getTargetLineInfo()) {
+                    if (!(line instanceof DataLine.Info data) || !TargetDataLine.class.isAssignableFrom(data.getLineClass())) continue;
+                    for (AudioFormat nativeFormat : data.getFormats()) {
+                        if (nativeFormat.getSampleRate() <= 0 || nativeFormat.getSampleSizeInBits() <= 0
+                                || nativeFormat.getFrameSize() <= 0 || nativeFormat.getChannels() < 1
+                                || nativeFormat.getChannels() > 2 || !AudioSystem.isConversionSupported(OUTPUT,nativeFormat)) continue;
+                        if (candidates.stream().noneMatch(f -> f.matches(nativeFormat))) candidates.add(nativeFormat);
+                    }
+                }
+            } catch (RuntimeException ignored) { /* 驱动不提供原生清单时继续探测常见格式 */ }
+        }
+        return candidates;
     }
 
     public static AudioInputStream convert(AudioInputStream input) {
@@ -55,20 +86,30 @@ public final class AudioCapture implements CaptureSession.Source {
     }
 
     public static AudioCapture open(String requested) throws Exception {
+        return open(requested, mixers());
+    }
+
+    static AudioCapture open(String requested, List<Mixer> available) throws Exception {
         String name = requested == null ? "" : requested.trim();
         Mixer selected = null;
         if (!name.isEmpty()) {
-            List<Mixer.Info> matches = new ArrayList<>();
-            for (Mixer.Info info : AudioSystem.getMixerInfo()) {
-                if (info.getName().equals(name)) { matches = List.of(info); break; }
-                if (info.getName().toLowerCase(Locale.ROOT).contains(name.toLowerCase(Locale.ROOT))) matches.add(info);
+            List<Mixer> matches = new ArrayList<>();
+            List<Mixer> exact = new ArrayList<>();
+            for (Mixer mixer : available) {
+                try { if (!supportsInput(mixer)) continue; }
+                catch (RuntimeException ignored) { continue; }
+                Mixer.Info info = mixer.getMixerInfo();
+                if (info.getName().equals(name)) exact.add(mixer);
+                if (info.getName().toLowerCase(Locale.ROOT).contains(name.toLowerCase(Locale.ROOT))) matches.add(mixer);
             }
+            if (!exact.isEmpty()) matches = exact;
             if (matches.size() != 1) throw new IllegalArgumentException(matches.isEmpty()
-                    ? "找不到设备「" + name + "」，请按 F8 重新选择" : "设备名匹配到多个输入，请按 F8 选择完整名称");
-            selected = AudioSystem.getMixer(matches.getFirst());
+                    ? "找不到可录音的输入设备「" + name + "」，请按 F8 重新选择或使用系统默认输入"
+                    : "设备名匹配到多个输入，请在系统中区分设备名称，或按 F8 使用系统默认输入");
+            selected = matches.getFirst();
         }
         List<String> failures = new ArrayList<>();
-        for (AudioFormat format : formats()) {
+        for (AudioFormat format : captureFormats(selected)) {
             TargetDataLine line = null;
             try {
                 DataLine.Info info = new DataLine.Info(TargetDataLine.class, format);
@@ -84,7 +125,8 @@ public final class AudioCapture implements CaptureSession.Source {
             }
         }
         throw new LineUnavailableException("无法打开录音设备。请检查系统/启动器麦克风权限、静音及设备占用。尝试："
-                + (failures.isEmpty() ? "没有支持的 PCM 格式" : String.join("; ", failures)));
+                + (failures.isEmpty() ? "输入设备没有支持的可转换 PCM 格式；可将常用麦克风设为系统默认后按 F8 选择系统默认输入"
+                                     : String.join("; ", failures)));
     }
 
     public int read(byte[] bytes) throws IOException { return pcm.read(bytes, 0, bytes.length); }

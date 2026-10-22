@@ -195,6 +195,32 @@
              oninput="document.getElementById('intervalVal').textContent=this.value+'s'" onchange="saveConfig()">
     </section>
 
+    <section class="card col-4" aria-labelledby="phoneticTitle">
+      <h2 id="phoneticTitle">危险词读音匹配</h2>
+      <label class="switch"><input type="checkbox" id="phoneticEnabled" onchange="savePhoneticConfig()"><span>按读音向危险词模糊匹配</span></label>
+      <div class="kv"><label for="phoneticThreshold">模糊强度（越大越宽）</label><span id="phoneticThresholdVal">0.30</span></div>
+      <input type="range" id="phoneticThreshold" min="0.05" max="0.75" step="0.05" oninput="document.getElementById('phoneticThresholdVal').textContent=this.value" onchange="savePhoneticConfig()">
+      <p class="muted">先精确、再按读音选最接近的危险词。采用最终语句，初识不再否决已接受的复核结果。强度越大，近音也越容易触发。</p>
+    </section>
+
+    <section class="card col-4" aria-labelledby="silenceTitle">
+      <h2 id="silenceTitle">未识别到讲话时扣血</h2>
+      <label class="switch" style="margin-bottom:8px">
+        <input type="checkbox" id="silenceEnabled" onchange="saveSilenceConfig()">
+        <span>启用持续扣血（默认关闭）</span>
+      </label>
+      <div class="kv"><label for="silenceTimeout">无新识别文字后开始</label><span id="silenceTimeoutVal">20s</span></div>
+      <input type="range" id="silenceTimeout" min="5" max="600" step="1"
+             oninput="document.getElementById('silenceTimeoutVal').textContent=this.value+'s'" onchange="saveSilenceConfig()">
+      <div class="kv"><label for="silenceDamage">每次扣血量</label><span id="silenceDamageVal">2 点</span></div>
+      <input type="range" id="silenceDamage" min="0.5" max="20" step="0.5"
+             oninput="document.getElementById('silenceDamageVal').textContent=this.value+' 点'" onchange="saveSilenceConfig()">
+      <div class="kv"><label for="silenceInterval">扣血间隔</label><span id="silenceIntervalVal">4s</span></div>
+      <input type="range" id="silenceInterval" min="0.5" max="60" step="0.5"
+             oninput="document.getElementById('silenceIntervalVal').textContent=this.value+'s'" onchange="saveSilenceConfig()">
+      <p class="muted">2 点生命 = 1 颗心。识别到新文字会重新计时；只有声音不算。仅游戏开始后对生存/冒险玩家生效，死亡后重新等待。</p>
+    </section>
+
     <section class="card col-4">
       <h2>言多必失榜 <span class="hint">共 <span id="totalDeaths">0</span> 次</span></h2>
       <div class="list" id="board"><div class="empty">还没有人死</div></div>
@@ -343,6 +369,12 @@ function render() {
   setRange('names', state.namesPerRound, 'namesVal');
   setRange('highFreq', state.highFreqPerRound, 'highFreqVal');
   setRange('interval', Math.min(180, total), 'intervalVal', 's');
+  if(document.activeElement.id!=='phoneticEnabled')$('phoneticEnabled').checked=state.phoneticMatching ?? true;
+  setRange('phoneticThreshold',state.phoneticThreshold ?? .30,'phoneticThresholdVal','');
+  if(document.activeElement.id!=='silenceEnabled')$('silenceEnabled').checked=!!state.silencePenaltyEnabled;
+  setRange('silenceTimeout',state.silenceTimeoutSeconds ?? 20,'silenceTimeoutVal','s');
+  setRange('silenceDamage',state.silenceDamageAmount ?? 2,'silenceDamageVal',' 点');
+  setRange('silenceInterval',state.silenceDamageIntervalSeconds ?? 4,'silenceIntervalVal','s');
 
   renderChips('stats', state.stats, '还没有人说话…');
   renderChips('lastCycle', state.lastCycle, '上一周期没有数据');
@@ -354,7 +386,7 @@ function render() {
 
 function setRange(id, value, labelId, suffix) {
   if (document.activeElement !== $(id)) $(id).value = value;
-  $(labelId).textContent = value + (suffix || '');
+  $(labelId).textContent = $(id).value + (suffix || '');
 }
 
 function renderWords() {
@@ -567,6 +599,18 @@ function saveConfig() {
   });
   toast('设置已保存');
 }
+async function saveSilenceConfig() {
+  const saved=await act('/api/config', {
+    silencePenaltyEnabled: $('silenceEnabled').checked,
+    silenceTimeoutSeconds: Number($('silenceTimeout').value),
+    silenceDamageAmount: Number($('silenceDamage').value),
+    silenceDamageIntervalSeconds: Number($('silenceInterval').value)
+  });
+  if(saved)toast('扣血设置已保存');
+}
+async function savePhoneticConfig() {
+  if(await act('/api/config',{phoneticMatching:$('phoneticEnabled').checked,phoneticThreshold:Number($('phoneticThreshold').value)}))toast('读音匹配设置已保存');
+}
 function addWord() {
   const v = $('addInput').value.trim();
   if (!v) return;
@@ -617,7 +661,8 @@ async function pollAudio() {
         + (audio.note ? ` · ${audio.note}` : '');
     const post = audio.postprocess;
     const latest = post && post.latest;
-    $('sentenceStatus').textContent = post ? ('句末模型：' + ({loading:'后台准备中',ready:'已就绪',failed:'不可用，继续基础识别',closed:'已停止'}[post.state] || post.state)
+    if(audio.health&&audio.health!=='READY')$('audioStatus').textContent+=' · 识别/无识别扣血已暂停（'+({MICROPHONE:'麦克风异常或未连接',MODEL_LOADING:'模型未就绪',MODEL_FAILED:'模型异常',STALLED:'语音处理卡住',UNKNOWN:'状态未确认'}[audio.health]||audio.health)+'）';
+    $('sentenceStatus').textContent = post ? ('句末模型：' + ({loading:'准备中，识别暂停',ready:'已就绪',failed:'不可用，识别暂停',closed:'已停止'}[post.state] || post.state)
       + (post.error ? ' · ' + post.error : '') + (latest ? ' · ' + latest.punctuated + ' · 复核 ' + Math.round(latest.reviewMs) + 'ms / 标点 ' + Math.round(latest.punctuationMs) + 'ms' + (latest.error ? ' · ' + latest.error : '') : '')) : '';
     const signature = JSON.stringify([audio.devices, audio.current]);
     if ($('audioDevice').dataset.signature !== signature) {

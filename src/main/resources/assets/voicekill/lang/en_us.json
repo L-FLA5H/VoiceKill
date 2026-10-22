@@ -1,0 +1,5 @@
+{
+  "key.voicekill.settings": "VoiceKill settings",
+  "death.attack.voicekill.silence": "%1$s stayed silent for too long.",
+  "death.attack.voicekill.silence.player": "%1$s stayed silent for too long after fighting %2$s."
+}

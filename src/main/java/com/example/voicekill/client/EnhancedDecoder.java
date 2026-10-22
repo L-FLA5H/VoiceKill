@@ -5,7 +5,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
-/** 结算仍由基础识别器决定；可选模型后台准备，失败时沿用原始识别。 */
+/** 结算仍由基础识别器决定；后台模型状态交给采音会话门控，未就绪或故障时暂停识别。 */
 public final class EnhancedDecoder implements CaptureSession.Decoder {
     @FunctionalInterface public interface Loader { SentencePostprocessor load() throws Exception; }
     private final CaptureSession.Decoder base;
@@ -19,6 +19,12 @@ public final class EnhancedDecoder implements CaptureSession.Decoder {
     private long epoch;
     private Set<Integer> literalCandidates=Set.of();
     public Set<Integer> literalCandidates(){return literalCandidates;}
+    @Override public com.example.voicekill.speech.RecognitionHealth.Issue issue() {
+        var issue=base.issue();if(issue!=com.example.voicekill.speech.RecognitionHealth.Issue.READY)return issue;
+        var current=post;
+        if("loading".equals(state))return com.example.voicekill.speech.RecognitionHealth.Issue.MODEL_LOADING;
+        return current==null||closed||current.failed()?com.example.voicekill.speech.RecognitionHealth.Issue.MODEL_FAILED:com.example.voicekill.speech.RecognitionHealth.Issue.READY;
+    }
 
     public EnhancedDecoder(CaptureSession.Decoder base,SentencePostprocessor post,float seconds) {
         this.base=base;this.post=post;this.state="ready";this.epoch=base.epoch();
@@ -55,7 +61,9 @@ public final class EnhancedDecoder implements CaptureSession.Decoder {
                 latest=new SentencePostprocessor.Snapshot(raw.getFirst(),"",raw.getFirst(),false,state,0,0,error,0);
                 return raw;
             }
-            List<String> result=current.process(raw,audio.samples());latest=current.snapshot();
+            float[] finalized = base.utteranceSamples();
+            List<String> result=current.process(raw,finalized==null?audio.samples():finalized);latest=current.snapshot();
+            if(current.failed()){state="failed";error=latest.error();}
             if(latest.accepted())literalCandidates=Set.of(result.size()-1);return result;
         } finally {audio.clear();}
     }
@@ -64,7 +72,12 @@ public final class EnhancedDecoder implements CaptureSession.Decoder {
         if(latest!=null)result.put("latest",latest);return result;
     }
     @Override public CaptureSession.Boundary boundary(){return base.boundary();}
+    @Override public String partial(){return base.partial();}
+    @Override public boolean reviewConfirmed(){return latest!=null&&(latest.accepted()||latest.reason().equals("unchanged"));}
+    @Override public String displayFinal(List<String> candidates){return latest==null?base.displayFinal(candidates):com.example.voicekill.speech.GameTerms.display(latest.raw(),latest.punctuated(),reviewConfirmed());}
     @Override public long epoch(){return base.epoch();}
+    @Override public com.example.voicekill.speech.SpeechPacket.RoundSpan rounds(){return base.rounds();}
+    @Override public void discard() throws Exception {base.discard();audio.clear();latest=null;literalCandidates=Set.of();epoch=base.epoch();}
     @Override public void close() {
         SentencePostprocessor current;
         synchronized(lock){if(closed)return;closed=true;state="closed";current=post;post=null;}

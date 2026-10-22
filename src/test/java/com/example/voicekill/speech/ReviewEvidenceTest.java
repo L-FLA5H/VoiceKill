@@ -11,6 +11,32 @@ class ReviewEvidenceTest {
         var packet=SpeechPacket.parse(SpeechPacket.encode(List.of(raw,revised),Set.of(1)));
         return window.accept("p",packet,word(target),time);
     }
+    @Test void acceptedReviewReplacesRawPunishmentAndRawHistory() {
+        var window=new SpeechWindow();
+        assertNull(review(window,"好吃的","how much the shirt is","吃的",100).hit());
+        assertNull(review(window,"豆腐汤","how much the shirt is","豆腐汤宝宝",200).hit());
+        assertNull(window.accept("p",SpeechPacket.parse("宝宝"),word("豆腐汤宝宝"),300).hit());
+        var packet=SpeechPacket.parse(SpeechPacket.encode(List.of("ABC","amc"),Set.of(1)));
+        var words=List.of(new WordMatcher.Word("abc","manual",List.of()),new WordMatcher.Word("mc","manual",List.of()));
+        assertEquals("mc",new SpeechWindow().accept("p",packet,words,100).hit().word());
+        assertEquals("amc",packet.finalText());
+    }
+    @Test void chineseWordsNeedBothOriginalAndFinalSupport() {
+        assertNotNull(review(new SpeechWindow(),"我和老板","我和P老板","老板",100).hit());
+        assertNotNull(review(new SpeechWindow(),"我和豆腐唐包包","我和豆腐唐包包玩MC","豆腐汤宝宝",100).hit());
+        assertNull(review(new SpeechWindow(),"今天很好","豆腐汤宝宝玩MC","豆腐汤宝宝",100).hit());
+        assertNull(review(new SpeechWindow(),"才","干 CPU","干",100).hit());
+    }
+    @Test void confirmedOriginalFragmentsCanStillCompleteLongNames() {
+        var window=new SpeechWindow();
+        assertNull(window.accept("p",SpeechPacket.parse("豆腐汤"),word("豆腐汤宝宝"),100).hit());
+        assertNotNull(review(window,"宝宝","宝宝。","豆腐汤宝宝",200).hit());
+    }
+    @Test void reviewedExactStillBeatsCorroboratedFuzzyNames() {
+        var words=List.of(new WordMatcher.Word("豆腐汤宝宝","name",List.of()),new WordMatcher.Word("p老板","manual",List.of()));
+        var packet=SpeechPacket.parse(SpeechPacket.encode(List.of("豆腐唐包包老板","豆腐唐包包P老板"),Set.of(1)));
+        assertEquals("p老板",new SpeechWindow().accept("p",packet,words,100).hit().word());
+    }
     @Test void reviewedLettersUseContainmentAsRequested() {
         assertNotNull(review(new SpeechWindow(),"ABC","amc","mc",100).hit());
         assertEquals("review-exact",review(new SpeechWindow(),"TV Q","q a q","qaq",100).hit().mode());

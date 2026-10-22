@@ -6,9 +6,48 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.LinkedBlockingQueue;
+import com.example.voicekill.speech.RecognitionHealth;
+import com.example.voicekill.speech.RecognitionHealth.Issue;
 import static org.junit.jupiter.api.Assertions.*;
 
 class CaptureSessionTest {
+    @Test void waitingForTheFirstFrameIsUnconfirmedRatherThanAMicrophoneFailure() throws Exception {
+        var entered=new CountDownLatch(1);var firstFrame=new CountDownLatch(1);var closed=new CountDownLatch(1);var progressed=new CountDownLatch(1);
+        var source=new CaptureSession.Source(){boolean first=true;public int read(byte[] bytes)throws Exception{if(first){first=false;entered.countDown();firstFrame.await();return 2;}closed.await();return -1;}public void close(){firstFrame.countDown();closed.countDown();}};
+        var decoder=new CaptureSession.Decoder(){public List<String> accept(byte[] bytes){return List.of();}public void close(){}};
+        var session=new CaptureSession(source,decoder,ignored->{},ignored->fail("unexpected failure"),ignored->progressed.countDown());
+        try{session.start();assertTrue(entered.await(1,TimeUnit.SECONDS));assertEquals(Issue.UNKNOWN,session.issue());firstFrame.countDown();assertTrue(progressed.await(1,TimeUnit.SECONDS));assertEquals(Issue.READY,session.issue());}finally{assertTrue(session.stop());}
+    }
+    @Test void modelLoadingAndFailureSuppressInferenceAndRecoveryStartsWithFreshAudio() throws Exception {
+        var input=new LinkedBlockingQueue<byte[]>();var readiness=new AtomicReference<>(Issue.MODEL_LOADING);
+        var paused=new CountDownLatch(1);var sent=new CountDownLatch(1);var failed=new CountDownLatch(1);var calls=new AtomicInteger();var discarded=new AtomicInteger();
+        var source=new CaptureSession.Source(){public int read(byte[] bytes)throws Exception{byte[] frame=input.take();System.arraycopy(frame,0,bytes,0,frame.length);return frame.length;}public void close(){}};
+        var decoder=new CaptureSession.Decoder(){public List<String> accept(byte[] bytes){calls.incrementAndGet();return List.of("正常");}public void discard(){discarded.incrementAndGet();}public void close(){}};
+        var session=new CaptureSession(source,decoder,ignored->sent.countDown(),ignored->fail("unexpected failure"),text->{if(readiness.get()==Issue.MODEL_LOADING)paused.countDown();if(readiness.get()==Issue.MODEL_FAILED)failed.countDown();},readiness::get);
+        try {
+            session.start();input.add(new byte[2]);assertTrue(paused.await(1,TimeUnit.SECONDS));assertEquals(0,calls.get());assertEquals(Issue.MODEL_LOADING,session.issue());
+            readiness.set(Issue.READY);input.add(new byte[2]);assertTrue(sent.await(1,TimeUnit.SECONDS));assertEquals(1,calls.get());assertTrue(discarded.get()>=2);
+            readiness.set(Issue.MODEL_FAILED);input.add(new byte[2]);assertTrue(failed.await(1,TimeUnit.SECONDS));assertEquals(1,calls.get());assertEquals(Issue.MODEL_FAILED,session.issue());
+        } finally {assertTrue(session.stop());}
+    }
+    @Test void postModelRuntimeFailureCannotLeakTheFallbackTranscript() throws Exception {
+        var calls=new AtomicInteger();
+        var base=new CaptureSession.Decoder(){public List<String> accept(byte[] bytes){calls.incrementAndGet();return List.of("危险词");}public void close(){}};
+        var post=new SentencePostprocessor(new SentencePostprocessor.Reviewer(){public String recognize(float[] audio){throw new IllegalStateException("model failed");}public void close(){}},null);
+        var enhanced=new EnhancedDecoder(base,post,10);
+        var source=new CaptureSession.Source(){int count;public int read(byte[] bytes){java.util.Arrays.fill(bytes,(byte)32);return count++<3?1280:-1;}public void close(){}};
+        var session=new CaptureSession(source,enhanced,ignored->fail("failed model published raw text"));
+        session.start();awaitStopped(session);assertTrue(post.failed());assertEquals(1,calls.get());
+    }
+    @Test void aLiveThreadWithoutFreshAudioProcessingIsNotHealthy() throws Exception {
+        var waiting=new CountDownLatch(1);var release=new CountDownLatch(1);
+        var source=new CaptureSession.Source(){boolean first=true;public int read(byte[] bytes)throws Exception{if(first){first=false;return 2;}waiting.countDown();release.await();return -1;}public void close(){release.countDown();}};
+        var decoder=new CaptureSession.Decoder(){public List<String> accept(byte[] bytes){return List.of();}public void close(){}};
+        var session=new CaptureSession(source,decoder,ignored->{});
+        try{session.start();assertTrue(waiting.await(1,TimeUnit.SECONDS));assertEquals(Issue.READY,session.issue());TimeUnit.NANOSECONDS.sleep(RecognitionHealth.FRAME_TIMEOUT_NANOS+20_000_000L);assertTrue(session.isRunning());assertEquals(Issue.STALLED,session.issue());}finally{assertTrue(session.stop());}
+    }
     @Test void captureUsesFortyMillisecondPcmFrames() throws Exception {
         var sizes = new java.util.concurrent.CopyOnWriteArrayList<Integer>();
         var source = new CaptureSession.Source() {

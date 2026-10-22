@@ -45,6 +45,7 @@ for item in spec['items']:
     items.append(dict(id=item['id'],target=item['target'],spokenText=item['text'],voice=item['voice'],
                       kind=item['kind'],file=path.name,speechStartSample=speech_start,speechEndSample=speech_end,
                       durationSeconds=len(joined)/rate,sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+    if 'expectedWords' in item: items[-1]['expectedWords'] = item['expectedWords']
 path = root / 'silence.wav'
 with wave.open(str(path),'wb') as stream:
     stream.setparams((1,2,rate,0,'NONE','not compressed'));stream.writeframes(bytes(rate*2*3))

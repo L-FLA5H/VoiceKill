@@ -38,4 +38,20 @@ public final class RecognitionHints {
         }
         return String.join("/", terms);
     }
+
+    /** 优先词保持既有最高强度，其余词减弱；长中文优先词仅使用较低提示强度。 */
+    public static String encodePriority(List<com.example.voicekill.speech.WordMatcher.Word> words) {
+        Set<String> terms=new LinkedHashSet<>();int count=0;
+        for(var item:com.example.voicekill.speech.WordMatcher.ordered(words)) {
+            String name=TextUtil.normalize(item.text());
+            if(name.length()<2||name.length()>32||name.codePoints().anyMatch(c->!(c<128&&Character.isLetterOrDigit(c))&&Character.UnicodeScript.of(c)!=Character.UnicodeScript.HAN))continue;
+            boolean latin=name.matches(".*[a-z].*");
+            if(!latin&&(!item.preferred()||name.length()<4))continue;
+            String encoded=latin?encode(List.of(name)):name;
+            String score=!latin?"0.5":item.preferred()?"1.5":"0.75";
+            for(String term:encoded.split("/"))if(!term.isEmpty())terms.add(term+" :"+score);
+            if(++count>=20)break;
+        }
+        return String.join("/",terms);
+    }
 }

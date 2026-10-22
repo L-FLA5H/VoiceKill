@@ -21,4 +21,16 @@ The offline CT Transformer punctuation model is provided by sherpa-onnx:
 https://github.com/k2-fsa/sherpa-onnx/releases/tag/punctuation-models
 Pinned revisions, sources and hashes are in voicekill/asr/sensevoice-review-int8.json
 and voicekill/asr/punctuation-zh-en-int8.json. No model weights are bundled.
-The separate experimental SenseVoice/Silero replacement pipeline remains test-only.
+Natural boundary detection uses the separately downloaded Silero VAD model
+under the MIT License, https://github.com/snakers4/silero-vad.
+Pinned source, size and SHA256 are in voicekill/asr/silero-vad.json.
+This VAD controls the boundary of the same bilingual Zipformer stream;
+it does not replace Zipformer with the experimental SenseVoice ASR pipeline.
+
+The compact Han-Latin pronunciation data in voicekill/pinyin-icu-77.1.json
+is derived offline from ICU4J 77.1 (Unicode license), with its license included
+as icu4j-Unicode-license.txt. ICU4J is not an added runtime dependency.
+The game-term names are factual labels extracted from Minecraft 1.21.11's
+zh_cn language asset; the official asset URL and SHA1 are recorded in
+voicekill/game-terms-zh-cn.json. These labels remain Mojang/Microsoft's work;
+no ownership or MIT relicensing of Minecraft assets is claimed.

@@ -3,6 +3,7 @@ package com.example.voicekill.client;
 import com.example.voicekill.speech.SpeechPacket;
 import com.example.voicekill.speech.SpeechWindow;
 import com.example.voicekill.speech.WordMatcher;
+import com.example.voicekill.speech.PhoneticMatcher;
 import com.example.voicekill.util.WordAliases;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -22,9 +23,13 @@ import java.util.concurrent.locks.LockSupport;
 public final class NicknameReplay {
     private static SentencePostprocessor.Reviewer sharedReviewer;
     private static SentencePostprocessor.Punctuator sharedPunctuator;
+    private static ZipformerDecoder.Settings replaySettings = ZipformerDecoder.Settings.defaults();
+    private static List<WordMatcher.Word> evaluationWords=List.of();
     private static final List<String> TARGETS = List.of("qaq", "p老板", "豆腐汤宝宝", "干", "才");
     record Clip(String id, String target, String spokenText, String voice, String kind, String file,
-                long speechStartSample, long speechEndSample, double durationSeconds, String sha256) {}
+                long speechStartSample, long speechEndSample, double durationSeconds, String sha256,List<String> expectedWords) {
+        List<String> expected(){return expectedWords!=null?List.copyOf(expectedWords):target==null?List.of():List.of(target);}
+    }
     record Corpus(String source, int sampleRate, String endpointAnnotation, List<Clip> items) {}
 
     private static final class PacedSource implements CaptureSession.Source {
@@ -51,9 +56,18 @@ public final class NicknameReplay {
     }
 
     public static void main(String[] args) throws Exception {
+        com.example.voicekill.speech.GameTerms.awaitReady();
         String engine=args.length>4 ? args[4] : "zipformer";
         List<String> targets=args.length>5 && !args[5].isBlank() ? List.of(args[5].split(",")) : TARGETS;
         boolean realtime=args.length<7 || Boolean.parseBoolean(args[6]);
+        replaySettings = new ZipformerDecoder.Settings(args.length>9 ? Float.parseFloat(args[9]) : .35f,
+                true, 1.5f, args.length>8 ? Float.parseFloat(args[8]) : 5f);
+        if(args.length>10&&!args[10].isBlank()) {
+            var entries=new Gson().fromJson(Files.readString(Path.of(args[10])),WordMatcher.Word[].class);
+            evaluationWords=java.util.Arrays.stream(entries).map(w->new WordMatcher.Word(w.text(),w.source(),
+                    w.aliases()==null?WordAliases.variants(w.text(),null):w.aliases(),w.preferred()||"manual".equals(w.source())||"name".equals(w.source()))).toList();
+            targets=evaluationWords.stream().map(WordMatcher.Word::text).toList();
+        } else evaluationWords=targets.stream().map(t->new WordMatcher.Word(t,"manual",WordAliases.variants(t,null))).toList();
         Path model = Path.of(args[0]);
         if (engine.equals("sensevoice")) {
             try (var resource=NicknameReplay.class.getResourceAsStream("/voicekill/asr/sensevoice-int8.json")) {
@@ -62,7 +76,7 @@ public final class NicknameReplay {
                 for(var asset:manifest.files()) SpeechModels.validate(model.resolve(asset.name()),asset);
             }
         } else if (!engine.equals("vosk")) SpeechModels.prepare(model,false);
-        if(engine.equals("enhanced")) {
+        if(engine.equals("enhanced")||(engine.equals("natural")||engine.equals("priority"))) {
             sharedReviewer=NativeSentenceModels.reviewer(SpeechModels.prepare(Path.of(".local/models/sensevoice-int8"),false,"sensevoice-review-int8"),1);
             sharedPunctuator=NativeSentenceModels.punctuator(SpeechModels.prepare(Path.of(".local/models/punctuation-int8"),false,"punctuation-zh-en-int8"),1);
         }
@@ -101,10 +115,12 @@ public final class NicknameReplay {
         CountDownLatch released = new CountDownLatch(1);
         AtomicReference<String> error = new AtomicReference<>();
         long initStart = System.nanoTime();
-        CaptureSession.Decoder nativeDecoder = engine.equals("vosk") ? new MicCapture.VoskDecoder(model)
+        CaptureSession.Decoder nativeDecoder = engine.equals("vosk") ? new MicCapture.VoskDecoder(model, replaySettings.maxUtteranceSeconds())
                 : engine.equals("sensevoice") ? new SenseVoiceDecoder(model,1,.35f)
-                : new ZipformerDecoder(model, 1, () -> targets, ZipformerDecoder.Settings.defaults());
-        if(engine.equals("enhanced")) {
+                : (engine.equals("natural")||engine.equals("priority")) ? new NaturalSpeechDecoder(model,Path.of(".local/models/sensevoice-int8/silero_vad.onnx"),1,()->targets,replaySettings,engine.equals("priority")?()->RecognitionHints.encodePriority(evaluationWords):null)
+                : new ZipformerDecoder(model, 1, () -> targets, replaySettings);
+        nativeDecoder=new RoundTrackingDecoder(nativeDecoder,RoundTrackingDecoder.Context::empty);
+        if(engine.equals("enhanced")||(engine.equals("natural")||engine.equals("priority"))) {
             var post=new SentencePostprocessor(new SentencePostprocessor.Reviewer() {
                 public String recognize(float[] audio) throws Exception{return sharedReviewer.recognize(audio);}
                 public void close(){}
@@ -112,12 +128,14 @@ public final class NicknameReplay {
                 public String punctuate(String text) throws Exception{return sharedPunctuator.punctuate(text);}
                 public void close(){}
             });
-            nativeDecoder=new EnhancedDecoder(nativeDecoder,post,5);
+            nativeDecoder=new EnhancedDecoder(nativeDecoder,post,replaySettings.maxUtteranceSeconds());
         }
         final CaptureSession.Decoder activeDecoder=nativeDecoder;
         double initMs = (System.nanoTime() - initStart) / 1e6;
         CaptureSession.Decoder decoder = new CaptureSession.Decoder() {
             @Override public List<String> accept(byte[] bytes) throws Exception { return activeDecoder.accept(bytes); }
+            @Override public String partial(){return activeDecoder.partial();}
+            @Override public String displayFinal(List<String> candidates){return activeDecoder.displayFinal(candidates);}
             @Override public void close() { try { activeDecoder.close(); } finally { released.countDown(); } }
         };
         Map<String, SpeechWindow> windows = new LinkedHashMap<>();
@@ -125,21 +143,31 @@ public final class NicknameReplay {
         Map<String, Object> hits = new LinkedHashMap<>();
         for (String target : targets) {
             windows.put(target, new SpeechWindow());
-            configured.put(target, List.of(new WordMatcher.Word(target, "manual", WordAliases.variants(target, null))));
+            configured.put(target, evaluationWords.stream().filter(w->w.text().equals(target)).toList());
         }
         List<Map<String, Object>> events = new ArrayList<>();
+        var firstPartial=new AtomicReference<Map<String,Object>>();
+        SpeechWindow allWords=new SpeechWindow();
+        var combined=new AtomicReference<String>();
         CaptureSession session = new CaptureSession(source, decoder, candidates -> {
             double wallMs = (System.nanoTime() - source.startNanos) / 1e6;
             double audioMs = source.deliveredBytes / 32.0;
             Map<String, Object> event = new LinkedHashMap<>();
             event.put("candidates", candidates); event.put("wallMs", wallMs); event.put("audioMs", audioMs);
             event.put("afterSpeechEndMs", wallMs - clip.speechEndSample() / 16.0); events.add(event);
+            event.put("reviewConfirmed",activeDecoder.reviewConfirmed());
             if(activeDecoder instanceof EnhancedDecoder enhanced)event.put("postprocess",enhanced.snapshot());
             SpeechPacket packet = SpeechPacket.parse(SpeechPacket.encode(candidates,
-                    activeDecoder instanceof EnhancedDecoder enhanced?enhanced.literalCandidates():java.util.Set.of()));
+                    activeDecoder instanceof EnhancedDecoder enhanced?enhanced.literalCandidates():java.util.Set.of(),activeDecoder.reviewConfirmed()));
+            long matchingTime = realtime ? System.currentTimeMillis() : 1_000_000L + Math.round(audioMs);
+            if(combined.get()==null) {
+                var best=allWords.acceptFinal("combined",packet,evaluationWords,matchingTime,PhoneticMatcher.Settings.defaults());
+                if(best.hit()!=null)combined.set(best.hit().word());
+            }
             for (String target : targets) {
                 if (hits.containsKey(target)) continue; // 对应玩家在第一次命中时已被处决。
-                var decision = windows.get(target).accept("replay-player", packet, configured.get(target), System.currentTimeMillis());
+                // 加速回放也必须推进断句历史时间，不能把几秒的音频压成毫秒后错误拼接。
+                var decision = windows.get(target).acceptFinal("replay-player",packet,configured.get(target),matchingTime,PhoneticMatcher.Settings.defaults());
                 if (decision.hit() != null) {
                     Map<String, Object> hit = new LinkedHashMap<>();
                     hit.put("wallMs", (System.nanoTime() - source.startNanos) / 1e6);
@@ -149,7 +177,10 @@ public final class NicknameReplay {
                     hits.put(target, hit); windows.get(target).forget("replay-player");
                 }
             }
-        }, error::set);
+        }, error::set,progress->{
+            if(progress.interim()&&!progress.text().isBlank()&&firstPartial.get()==null)
+                firstPartial.compareAndSet(null,Map.of("text",progress.text(),"wallMs",(System.nanoTime()-source.startNanos)/1e6,"audioMs",source.deliveredBytes/32.0));
+        });
         source.startNanos = System.nanoTime();
         session.start();
         if (!released.await((long) Math.ceil(clip.durationSeconds()) + 10, TimeUnit.SECONDS)) {
@@ -161,7 +192,11 @@ public final class NicknameReplay {
         row.put("round", round); row.put("clip", clip); row.put("initMs", initMs);
         row.put("events", events); row.put("hits", hits);
         row.put("targetHit", clip.target() != null && hits.containsKey(clip.target()));
-        row.put("falseKillCount", hits.keySet().stream().filter(target -> !target.equals(clip.target())).count());
+        row.put("expectedWords",clip.expected());
+        row.put("expectedHitCount",clip.expected().stream().filter(hits::containsKey).count());
+        row.put("falseKillCount", hits.keySet().stream().filter(target -> !clip.expected().contains(target)).count());
+        row.put("firstCombinedHit",combined.get());
+        row.put("firstPartial",firstPartial.get());
         return row;
     }
 
@@ -172,17 +207,22 @@ public final class NicknameReplay {
         report.put("model", engine.equals("vosk") ? "vosk-model-small-cn-0.22; Shriek native; thread count not configured" : engine + "; sherpa-onnx 1.13.5; CPU 1 thread");
         report.put("timing", (realtime ? "wall clock paced " : "UNPACED CAPABILITY PROBE; NO LATENCY CLAIM; ") + CaptureSession.FRAME_BYTES + "-byte capture chunks; excludes model init, Minecraft tick and network");
         report.put("realtime", realtime);
+        report.put("matchingClock", realtime ? "wall-clock" : "input-audio timeline; accelerated inference does not extend the five-second history");
         report.put("evaluatedWords",targets);
-        report.put("recognitionContext", engine.equals("zipformer")||engine.equals("enhanced") ? RecognitionHints.names(targets) : List.of());
-        if(engine.equals("zipformer")||engine.equals("enhanced")) {
-        report.put("endpointSilence", ZipformerDecoder.Settings.defaults().endpointSilence());
-        report.put("shortUtteranceSilence", .6);
+        report.put("evaluationVocabulary",evaluationWords);
+        report.put("encodedHints",engine.equals("priority")?RecognitionHints.encodePriority(evaluationWords):RecognitionHints.encode(targets));
+        report.put("recognitionContext", engine.equals("zipformer")||engine.equals("enhanced")||(engine.equals("natural")||engine.equals("priority")) ? RecognitionHints.names(targets) : List.of());
+        if(engine.equals("zipformer")||engine.equals("enhanced")||(engine.equals("natural")||engine.equals("priority"))) {
+        report.put("endpointSilence", replaySettings.endpointSilence());
+        report.put("shortUtteranceSilence", Math.max(.6f, replaySettings.endpointSilence()));
         report.put("fastEndpointMinUtteranceSeconds", 1.2);
         }
-        report.put("maxUtteranceSeconds", ZipformerDecoder.Settings.defaults().maxUtteranceSeconds());
-        report.put("budgetStart", "first nonempty recognition hypothesis; idle does not consume speech budget");
+        report.put("maxUtteranceSeconds", replaySettings.maxUtteranceSeconds());
+        report.put("budgetStart", (engine.equals("natural")||engine.equals("priority"))?"Silero detected speech; watchdog survives vocabulary churn; idle reset":"first nonempty recognition hypothesis; idle does not consume speech budget");
         report.put("segmentReset", engine.equals("sensevoice") ? "Silero VAD; fresh offline stream per utterance; no vocabulary access" : "fresh native stream at each endpoint and vocabulary change");
-        report.put("dangerWordPolicy", "each target separately configured as manual; no added aliases; first hit only");
+        report.put("dangerWordPolicy", "selected final sentence; each target scored separately using evaluationVocabulary; actual combined decision also recorded; first hit only");
+        report.put("phoneticMatching", true);
+        report.put("phoneticThreshold",PhoneticMatcher.Settings.defaults().threshold());
         report.put("rows", rows);
         Files.writeString(output, new GsonBuilder().disableHtmlEscaping().setPrettyPrinting().create().toJson(report));
     }

@@ -17,9 +17,9 @@ import org.slf4j.LoggerFactory;
 /**
  * 入口：装配配置、危险词管理器、词频统计、网页控制台、语音监听。
  *
- * 架构说明（重要）：本项目不需要自建 C2S 数据包。
- * Shriek 已经在客户端完成「麦克风 → Vosk → 文本」，并通过它自己的通道把文本送到服务端，
- * 服务端触发 ServerPlayerTalkEvent。我们只做「服务端拿到文本之后的判定与统计」。
+ * 完整识别句仍复用 Shriek 文本通道，进入服务端判定与统计。
+ * 轻量 C2S RecognitionActivityPayload 仅通知当前会话出现了新识别文字，
+ * 不携带转写内容，也不把临时假设用于危险词处罚或词频统计。
  */
 public class VoiceKillMod implements ModInitializer {
 
@@ -33,6 +33,7 @@ public class VoiceKillMod implements ModInitializer {
 
     @Override
     public void onInitialize() {
+        com.example.voicekill.speech.GameTerms.warmUp();
         config = ModConfig.load();
         speechStats = new SpeechStats();
         dangerWordManager = new DangerWordManager(config, speechStats);
@@ -40,6 +41,13 @@ public class VoiceKillMod implements ModInitializer {
 
         // 注册 S2C 通道（两边都要注册，客户端才能收）
         PayloadTypeRegistry.playS2C().register(HudStatePayload.TYPE, HudStatePayload.CODEC);
+        PayloadTypeRegistry.playS2C().register(com.example.voicekill.network.RecognitionLexiconPayload.TYPE,com.example.voicekill.network.RecognitionLexiconPayload.CODEC);
+        PayloadTypeRegistry.playC2S().register(com.example.voicekill.network.RecognitionActivityPayload.TYPE,com.example.voicekill.network.RecognitionActivityPayload.CODEC);
+        net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.registerGlobalReceiver(com.example.voicekill.network.RecognitionActivityPayload.TYPE,
+                (payload,context)->dangerWordManager.recordRecognition(context.player(),payload.session()));
+        PayloadTypeRegistry.playC2S().register(com.example.voicekill.network.RecognitionHealthPayload.TYPE,com.example.voicekill.network.RecognitionHealthPayload.CODEC);
+        net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.registerGlobalReceiver(com.example.voicekill.network.RecognitionHealthPayload.TYPE,
+                (payload,context)->dangerWordManager.recordRecognitionHealth(context.player(),payload.session(),payload.issue()));
 
         // /voicekill start | stop | status（别名 /vk）
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
@@ -51,7 +59,7 @@ public class VoiceKillMod implements ModInitializer {
         // 玩家进服时把当前危险词推给他
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) ->
                 dangerWordManager.onPlayerJoin(handler.player));
-        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> SpeechHandler.forget(handler.player));
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {SpeechHandler.forget(handler.player);dangerWordManager.forgetRecognition(handler.player);});
 
         // 语音事件 → 记录词频 → 判定 → kill
         SpeechHandler.register(dangerWordManager);

@@ -64,6 +64,22 @@ public final class ModConfig {
 
     /** 把每句识别结果打到日志（排查「为什么没触发」时非常有用） */
     public boolean logSpeech = true;
+    public boolean phoneticMatching = true;
+    public float phoneticThreshold = .30f;
+    public com.example.voicekill.speech.PhoneticMatcher.Settings phoneticSettings(){return new com.example.voicekill.speech.PhoneticMatcher.Settings(phoneticMatching,phoneticThreshold);}
+
+    /** Server-owned optional damage after no new recognized text; 2 health points = 1 heart. */
+    public boolean silencePenaltyEnabled = false;
+    public float silenceTimeoutSeconds = 20f;
+    public float silenceDamageAmount = 2f;
+    public float silenceDamageIntervalSeconds = 4f;
+    public com.example.voicekill.speech.RecognitionSilence.Rules silenceRules(){return new com.example.voicekill.speech.RecognitionSilence.Rules(silencePenaltyEnabled,silenceTimeoutSeconds,silenceDamageAmount,silenceDamageIntervalSeconds);}
+    public void applySilenceRules(com.example.voicekill.speech.RecognitionSilence.Rules rules){silencePenaltyEnabled=rules.enabled();silenceTimeoutSeconds=rules.timeoutSeconds();silenceDamageAmount=rules.damageAmount();silenceDamageIntervalSeconds=rules.intervalSeconds();}
+
+    /** Server-owned death-message templates; empty/invalid lists fall back to defaults. */
+    public boolean customDeathMessages = true;
+    public String deathMessageStyle = "friends";
+    public List<String> deathMessages = new ArrayList<>(com.example.voicekill.DeathMessages.defaults());
 
     /**
      * Shriek 使用的 Vosk 模型名（见 https://alphacephei.com/vosk/models）。
@@ -74,11 +90,13 @@ public final class ModConfig {
     /** 默认中英双语流式模型；vosk 为兼容模式。 */
     public String speechEngine = "zipformer";
     public int speechThreads = 1;
-    /** 只提示带英文字母的多字昵称；不提示中文单字。 */
+    /** 本轮原词提示；优先字母/混合词和低强度长中文人名，不提示中文单字。 */
     public boolean speechContextHints = true;
-    public float speechEndpointSilenceSeconds = .35f;
+    public boolean speechNaturalBoundary = true;
+    public boolean autoStartMicrophone = true;
+    public float speechEndpointSilenceSeconds = .6f;
     /** 无停顿时的最大语音段时长；还需加解码、网络和游戏 tick 时间。 */
-    public float speechMaxUtteranceSeconds = 5f;
+    public float speechMaxUtteranceSeconds = 10f;
     public boolean allowVoskFallback = true;
     /** 留空时缓存到游戏目录 voicekill/models/zipformer-bilingual-small-int8。 */
     public String speechModelDir = "";
@@ -89,7 +107,7 @@ public final class ModConfig {
     public String speechPostModelDir = "";
 
     /**
-     * 是否自动准备语音模型（基础约 60MB，可选句末模型另约 315MB，后台准备）。
+     * 是否自动准备语音模型（基础约 60MB，自然边界另约 0.64MB，可选句末模型另约 315MB，后台准备）。
      * 关掉后只使用本地已安装的指定模型；缺少模型会提示错误，不静默切换为英文。
      */
     public boolean autoModelDownload = true;
@@ -99,6 +117,18 @@ public final class ModConfig {
 
     /** 四角信息里是否显示「言多必失榜」 */
     public boolean hudShowBoard = true;
+    public boolean hudTranscript = true;
+    public float hudTranscriptSeconds = 6f;
+    public int hudTranscriptLines = 3;
+    public int hudWordWidth = 280;
+    public int hudWordLines = 6;
+    public boolean hudHotbarHint = true;
+    public int hudHotbarWidth = 420;
+    public float hudHotbarSeconds = 5f;
+    public int hudHotbarBottom = 72;
+    public float hudBoardX = 1f;
+    public float hudBoardY = .5f;
+    public float hudPanelOpacity = .4f;
 
     /**
      * 指定录音设备（优先完整名称，子串必须唯一，留空 = 系统默认设备）。
@@ -189,6 +219,8 @@ public final class ModConfig {
 
     /** 兜底：null / 空列表 / 非法间隔 全部拉回合法值 */
     private void sanitize() {
+        phoneticThreshold=phoneticSettings().threshold();
+        applySilenceRules(silenceRules());
         Set<String> cleaned = new LinkedHashSet<>();
         if (dangerWords != null) {
             for (String word : dangerWords) {
@@ -210,12 +242,22 @@ public final class ModConfig {
         if (voskModel == null) voskModel = "";
         if (!"zipformer".equals(speechEngine) && !"vosk".equals(speechEngine)) speechEngine = "zipformer";
         speechThreads = Math.max(1, Math.min(4, speechThreads));
-        if (!Float.isFinite(speechEndpointSilenceSeconds)) speechEndpointSilenceSeconds = .35f;
+        if (!Float.isFinite(speechEndpointSilenceSeconds)) speechEndpointSilenceSeconds = .6f;
         speechEndpointSilenceSeconds = Math.max(.35f, Math.min(1.5f, speechEndpointSilenceSeconds));
-        if (!Float.isFinite(speechMaxUtteranceSeconds)) speechMaxUtteranceSeconds = 5f;
+        if (!Float.isFinite(speechMaxUtteranceSeconds)) speechMaxUtteranceSeconds = 10f;
         speechMaxUtteranceSeconds = Math.max(2f, Math.min(15f, speechMaxUtteranceSeconds));
         if (speechModelDir == null) speechModelDir = "";
         if (speechPostModelDir == null) speechPostModelDir = "";
+        hudTranscriptSeconds = Float.isFinite(hudTranscriptSeconds)?Math.max(2f,Math.min(15f,hudTranscriptSeconds)):6f;
+        hudTranscriptLines = Math.max(1,Math.min(6,hudTranscriptLines));
+        hudWordWidth = Math.max(120,Math.min(600,hudWordWidth));
+        hudWordLines = Math.max(2,Math.min(12,hudWordLines));
+        hudHotbarWidth = Math.max(160,Math.min(800,hudHotbarWidth));
+        hudHotbarSeconds = Float.isFinite(hudHotbarSeconds)?Math.max(2f,Math.min(15f,hudHotbarSeconds)):5f;
+        hudHotbarBottom = Math.max(40,Math.min(180,hudHotbarBottom));
+        hudBoardX = Float.isFinite(hudBoardX)?Math.max(0f,Math.min(1f,hudBoardX)):1f;
+        hudBoardY = Float.isFinite(hudBoardY)?Math.max(0f,Math.min(1f,hudBoardY)):.5f;
+        hudPanelOpacity = Float.isFinite(hudPanelOpacity)?Math.max(0f,Math.min(.85f,hudPanelOpacity)):.4f;
 
         if (webPort < 1024 || webPort > 65535) webPort = 38471;
         if (smartPickChance < 0) smartPickChance = 0;
@@ -237,6 +279,8 @@ public final class ModConfig {
         if (highFreqDisabled == null) highFreqDisabled = new ArrayList<>();
         highFreqDisabled.removeIf(w -> w == null || w.isBlank());
         if (aliases == null) aliases = new LinkedHashMap<>();
+        deathMessageStyle = com.example.voicekill.DeathMessages.Style.from(deathMessageStyle).id;
+        deathMessages = new ArrayList<>(com.example.voicekill.DeathMessages.sanitize(deathMessages));
     }
 
     /** 加一个自定义危险词（去重、去空白）。返回是否真的加进去了 */

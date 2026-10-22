@@ -1,4 +1,7 @@
 {
   "key.voicekill.mic": "选择录音设备",
-  "key.categories.voicekill": "VoiceKill"
+  "key.categories.voicekill": "VoiceKill",
+  "key.voicekill.settings": "模组设置",
+  "death.attack.voicekill.silence": "%1$s 因长时间未识别到讲话而失去了最后一点生命。",
+  "death.attack.voicekill.silence.player": "%1$s 在与 %2$s 交手后，因长时间未识别到讲话而倒下。"
 }

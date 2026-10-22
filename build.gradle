@@ -78,7 +78,10 @@ tasks.register('replayNicknames', JavaExec) {
          project.findProperty('replayEngine') ?: 'zipformer',
          project.findProperty('replayWords') ?: '',
          project.findProperty('replayRealtime') ?: 'true',
-         project.findProperty('replayClips') ?: ''
+         project.findProperty('replayClips') ?: '',
+         project.findProperty('replayMaxUtteranceSeconds') ?: '5',
+         project.findProperty('replayEndpointSilenceSeconds') ?: '0.35',
+         project.findProperty('replayLexicon') ?: ''
 }
 
 tasks.register('probeDecoder', JavaExec) {
